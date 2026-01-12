@@ -54,6 +54,10 @@ pub struct RenameOptions {
     pub add_suffix: Option<String>,
     /// Suffix to remove (before extension)
     pub remove_suffix: Option<String>,
+    /// Replace prefix (old, new)
+    pub replace_prefix: Option<(String, String)>,
+    /// Replace suffix (old, new)
+    pub replace_suffix: Option<(String, String)>,
     /// Timestamp format for prefix (based on file creation time)
     pub timestamp_format: TimestampFormat,
     /// Process directories recursively
@@ -71,6 +75,8 @@ impl Default for RenameOptions {
             remove_prefix: None,
             add_suffix: None,
             remove_suffix: None,
+            replace_prefix: None,
+            replace_suffix: None,
             timestamp_format: TimestampFormat::None,
             recursive: true,
             dry_run: false,
@@ -226,7 +232,21 @@ impl FileRenamer {
             }
         }
 
-        // 3. Separator replacement (replace spaces, hyphens, underscores with desired separator)
+        // 3. Replace prefix
+        if let Some((old_prefix, new_prefix)) = &self.options.replace_prefix {
+            if result.starts_with(old_prefix) {
+                result = format!("{}{}", new_prefix, &result[old_prefix.len()..]);
+            }
+        }
+
+        // 4. Replace suffix
+        if let Some((old_suffix, new_suffix)) = &self.options.replace_suffix {
+            if result.ends_with(old_suffix) {
+                result = format!("{}{}", &result[..result.len() - old_suffix.len()], new_suffix);
+            }
+        }
+
+        // 5. Separator replacement (replace spaces, hyphens, underscores with desired separator)
         match self.options.space_replace {
             SpaceReplace::Underscore => {
                 // Replace all separators (spaces, hyphens) with underscores
@@ -239,7 +259,7 @@ impl FileRenamer {
             SpaceReplace::None => {}
         }
 
-        // 4. Case transformation
+        // 6. Case transformation
         match self.options.case_transform {
             CaseTransform::Lowercase => {
                 result = result.to_lowercase();
@@ -258,22 +278,22 @@ impl FileRenamer {
             CaseTransform::None => {}
         }
 
-        // 5. Add timestamp prefix (if specified)
+        // 7. Add timestamp prefix (if specified)
         if let Some(ts) = timestamp {
             result = format!("{}{}", ts, result);
         }
 
-        // 6. Add prefix
+        // 8. Add prefix
         if let Some(prefix) = &self.options.add_prefix {
             result = format!("{}{}", prefix, result);
         }
 
-        // 7. Add suffix (before extension)
+        // 9. Add suffix (before extension)
         if let Some(suffix) = &self.options.add_suffix {
             result = format!("{}{}", result, suffix);
         }
 
-        // 8. Add extension back
+        // 10. Add extension back
         if let Some(ext) = extension {
             result = format!("{}.{}", result, ext);
         }
@@ -980,6 +1000,112 @@ mod tests {
         // Should use hyphen for space-separated files
         assert_eq!(&file_name[8..9], "-", "Should use hyphen for space-separated files");
         assert!(file_name.ends_with("my document file.txt"));
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn test_replace_prefix() {
+        let test_dir = std::env::temp_dir().join("refmt_rename_replace_prefix");
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let test_file = test_dir.join("old_file.txt");
+        fs::write(&test_file, "content").unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.replace_prefix = Some(("old_".to_string(), "new_".to_string()));
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_file).unwrap();
+
+        assert_eq!(count, 1);
+        assert!(test_dir.join("new_file.txt").exists());
+        assert!(!test_file.exists());
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn test_replace_prefix_no_match() {
+        let test_dir = std::env::temp_dir().join("refmt_rename_replace_prefix_nomatch");
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let test_file = test_dir.join("other_file.txt");
+        fs::write(&test_file, "content").unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.replace_prefix = Some(("old_".to_string(), "new_".to_string()));
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_file).unwrap();
+
+        // File should not be renamed since prefix doesn't match
+        assert_eq!(count, 0);
+        assert!(test_file.exists());
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn test_replace_suffix() {
+        let test_dir = std::env::temp_dir().join("refmt_rename_replace_suffix");
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let test_file = test_dir.join("file_old.txt");
+        fs::write(&test_file, "content").unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.replace_suffix = Some(("_old".to_string(), "_new".to_string()));
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_file).unwrap();
+
+        assert_eq!(count, 1);
+        assert!(test_dir.join("file_new.txt").exists());
+        assert!(!test_file.exists());
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn test_replace_suffix_no_match() {
+        let test_dir = std::env::temp_dir().join("refmt_rename_replace_suffix_nomatch");
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let test_file = test_dir.join("file_other.txt");
+        fs::write(&test_file, "content").unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.replace_suffix = Some(("_old".to_string(), "_new".to_string()));
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_file).unwrap();
+
+        // File should not be renamed since suffix doesn't match
+        assert_eq!(count, 0);
+        assert!(test_file.exists());
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn test_replace_prefix_and_suffix_combined() {
+        let test_dir = std::env::temp_dir().join("refmt_rename_replace_both");
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let test_file = test_dir.join("old_file_v1.txt");
+        fs::write(&test_file, "content").unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.replace_prefix = Some(("old_".to_string(), "new_".to_string()));
+        opts.replace_suffix = Some(("_v1".to_string(), "_v2".to_string()));
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_file).unwrap();
+
+        assert_eq!(count, 1);
+        assert!(test_dir.join("new_file_v2.txt").exists());
+        assert!(!test_file.exists());
 
         fs::remove_dir_all(&test_dir).unwrap();
     }

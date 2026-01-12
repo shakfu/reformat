@@ -258,6 +258,14 @@ enum Commands {
         #[arg(long = "rm-suffix")]
         rm_suffix: Option<String>,
 
+        /// Replace prefix in filename (two arguments: <old> <new>)
+        #[arg(long = "replace-prefix", num_args = 2, value_names = ["OLD", "NEW"])]
+        replace_prefix: Option<Vec<String>>,
+
+        /// Replace suffix in filename (two arguments: <old> <new>)
+        #[arg(long = "replace-suffix", num_args = 2, value_names = ["OLD", "NEW"])]
+        replace_suffix: Option<Vec<String>>,
+
         /// Add timestamp prefix in YYYYMMDD format (e.g., 20250915_)
         #[arg(long = "timestamp-long")]
         timestamp_long: bool,
@@ -565,6 +573,8 @@ fn run_rename(
     rm_prefix: Option<String>,
     add_suffix: Option<String>,
     rm_suffix: Option<String>,
+    replace_prefix: Option<Vec<String>>,
+    replace_suffix: Option<Vec<String>>,
     timestamp_long: bool,
     timestamp_short: bool,
 ) -> anyhow::Result<()> {
@@ -602,6 +612,18 @@ fn run_rename(
     options.add_suffix = add_suffix.clone();
     options.remove_suffix = rm_suffix.clone();
 
+    // Set replace prefix/suffix options
+    if let Some(ref args) = replace_prefix {
+        if args.len() == 2 {
+            options.replace_prefix = Some((args[0].clone(), args[1].clone()));
+        }
+    }
+    if let Some(ref args) = replace_suffix {
+        if args.len() == 2 {
+            options.replace_suffix = Some((args[0].clone(), args[1].clone()));
+        }
+    }
+
     // Set timestamp format (only one should be selected)
     if timestamp_long {
         options.timestamp_format = TimestampFormat::Long;
@@ -622,6 +644,12 @@ fn run_rename(
     }
     if let Some(ref suffix) = rm_suffix {
         debug!("Remove suffix: '{}'", suffix);
+    }
+    if let Some(ref args) = replace_prefix {
+        debug!("Replace prefix: '{}' -> '{}'", args[0], args[1]);
+    }
+    if let Some(ref args) = replace_suffix {
+        debug!("Replace suffix: '{}' -> '{}'", args[0], args[1]);
     }
 
     let spinner = create_spinner("Renaming files...");
@@ -816,6 +844,8 @@ fn main() -> anyhow::Result<()> {
                 rm_prefix,
                 add_suffix,
                 rm_suffix,
+                replace_prefix,
+                replace_suffix,
                 timestamp_long,
                 timestamp_short,
             } => {
@@ -833,6 +863,8 @@ fn main() -> anyhow::Result<()> {
                     rm_prefix,
                     add_suffix,
                     rm_suffix,
+                    replace_prefix,
+                    replace_suffix,
                     timestamp_long,
                     timestamp_short,
                 )
