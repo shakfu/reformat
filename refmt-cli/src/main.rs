@@ -222,6 +222,10 @@ enum Commands {
         #[arg(short = 'd', long = "dry-run")]
         dry_run: bool,
 
+        /// Include symbolic links in processing
+        #[arg(long = "include-symlinks")]
+        include_symlinks: bool,
+
         /// Convert to lowercase
         #[arg(long = "to-lowercase")]
         to_lowercase: bool,
@@ -564,6 +568,7 @@ fn run_rename(
     path: PathBuf,
     recursive: bool,
     dry_run: bool,
+    include_symlinks: bool,
     to_lowercase: bool,
     to_uppercase: bool,
     to_capitalize: bool,
@@ -579,11 +584,12 @@ fn run_rename(
     timestamp_short: bool,
 ) -> anyhow::Result<()> {
     info!("Renaming files in: {}", path.display());
-    info!("Recursive: {}, Dry run: {}", recursive, dry_run);
+    info!("Recursive: {}, Dry run: {}, Include symlinks: {}", recursive, dry_run, include_symlinks);
 
     let mut options = RenameOptions::default();
     options.recursive = recursive;
     options.dry_run = dry_run;
+    options.include_symlinks = include_symlinks;
 
     // Set case transform (only one should be selected)
     if to_lowercase {
@@ -835,6 +841,7 @@ fn main() -> anyhow::Result<()> {
                 path,
                 recursive,
                 dry_run,
+                include_symlinks,
                 to_lowercase,
                 to_uppercase,
                 to_capitalize,
@@ -854,6 +861,7 @@ fn main() -> anyhow::Result<()> {
                     path,
                     recursive,
                     dry_run,
+                    include_symlinks,
                     to_lowercase,
                     to_uppercase,
                     to_capitalize,

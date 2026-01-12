@@ -126,8 +126,9 @@ impl CombinedProcessor {
     /// Processes a single file with all transformations
     fn process_single_file(&self, path: &Path, stats: &mut CombinedStats) -> crate::Result<()> {
         // Step 1: Rename file (lowercase)
+        // Combined processor only handles regular files, not symlinks
         let renamer = FileRenamer::new(self.rename_options.clone());
-        let renamed = renamer.rename_file(path)?;
+        let renamed = renamer.rename_file(path, false)?;
         if renamed {
             stats.files_renamed += 1;
         }

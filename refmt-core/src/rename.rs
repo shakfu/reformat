@@ -64,6 +64,8 @@ pub struct RenameOptions {
     pub recursive: bool,
     /// Dry run mode (don't rename files)
     pub dry_run: bool,
+    /// Include symbolic links in processing
+    pub include_symlinks: bool,
 }
 
 impl Default for RenameOptions {
@@ -80,6 +82,7 @@ impl Default for RenameOptions {
             timestamp_format: TimestampFormat::None,
             recursive: true,
             dry_run: false,
+            include_symlinks: false,
         }
     }
 }
@@ -103,9 +106,15 @@ impl FileRenamer {
     }
 
     /// Checks if a path should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        // Only process files, not directories
-        if !path.is_file() {
+    fn should_process(&self, path: &Path, is_symlink: bool) -> bool {
+        // Skip symlinks unless include_symlinks is enabled
+        if is_symlink && !self.options.include_symlinks {
+            return false;
+        }
+
+        // For symlinks, check if it's a symlink (not a directory symlink)
+        // For regular files, check is_file()
+        if !is_symlink && !path.is_file() {
             return false;
         }
 
@@ -301,9 +310,9 @@ impl FileRenamer {
         result
     }
 
-    /// Renames a single file
-    pub fn rename_file(&self, path: &Path) -> crate::Result<bool> {
-        if !self.should_process(path) {
+    /// Renames a single file or symlink
+    pub fn rename_file(&self, path: &Path, is_symlink: bool) -> crate::Result<bool> {
+        if !self.should_process(path, is_symlink) {
             return Ok(false);
         }
 
@@ -374,40 +383,61 @@ impl FileRenamer {
     pub fn process(&self, path: &Path) -> crate::Result<usize> {
         let mut renamed_count = 0;
 
-        if path.is_file() {
-            if self.rename_file(path)? {
+        // Check if path itself is a symlink
+        let path_is_symlink = path.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+
+        if path.is_file() || path_is_symlink {
+            if self.rename_file(path, path_is_symlink)? {
                 renamed_count = 1;
             }
         } else if path.is_dir() {
             if self.options.recursive {
-                // Collect all files first to avoid issues with renaming while iterating
-                let mut files: Vec<PathBuf> = WalkDir::new(path)
+                // Collect all files (and optionally symlinks) first to avoid issues with renaming while iterating
+                let include_symlinks = self.options.include_symlinks;
+                let mut files: Vec<(PathBuf, bool)> = WalkDir::new(path)
                     .into_iter()
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().is_file())
-                    .map(|e| e.path().to_path_buf())
+                    .filter(|e| {
+                        let ft = e.file_type();
+                        ft.is_file() || (include_symlinks && ft.is_symlink())
+                    })
+                    .map(|e| {
+                        let is_symlink = e.file_type().is_symlink();
+                        (e.path().to_path_buf(), is_symlink)
+                    })
                     .collect();
 
                 // Sort by depth (deepest first) to avoid parent directory rename issues
-                files.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+                files.sort_by(|a, b| b.0.components().count().cmp(&a.0.components().count()));
 
-                for file_path in files {
-                    if self.rename_file(&file_path)? {
+                for (file_path, is_symlink) in files {
+                    if self.rename_file(&file_path, is_symlink)? {
                         renamed_count += 1;
                     }
                 }
             } else {
-                let mut files: Vec<PathBuf> = fs::read_dir(path)?
+                let include_symlinks = self.options.include_symlinks;
+                let mut files: Vec<(PathBuf, bool)> = fs::read_dir(path)?
                     .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| p.is_file())
+                    .filter_map(|e| {
+                        let path = e.path();
+                        let ft = e.file_type().ok()?;
+                        let is_symlink = ft.is_symlink();
+                        if ft.is_file() || (include_symlinks && is_symlink) {
+                            Some((path, is_symlink))
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
 
                 // Sort for consistent processing
-                files.sort();
+                files.sort_by(|a, b| a.0.cmp(&b.0));
 
-                for file_path in files {
-                    if self.rename_file(&file_path)? {
+                for (file_path, is_symlink) in files {
+                    if self.rename_file(&file_path, is_symlink)? {
                         renamed_count += 1;
                     }
                 }
@@ -1106,6 +1136,124 @@ mod tests {
         assert_eq!(count, 1);
         assert!(test_dir.join("new_file_v2.txt").exists());
         assert!(!test_file.exists());
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinks_skipped_by_default() {
+        use std::os::unix::fs::symlink;
+
+        let test_dir = std::env::temp_dir().join("refmt_rename_symlink_skip");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&test_dir).unwrap();
+
+        // Create a regular file with uppercase name
+        let target_file = test_dir.join("Target.txt");
+        fs::write(&target_file, "content").unwrap();
+
+        // Create a symlink to the file
+        let symlink_file = test_dir.join("SymLink.txt");
+        symlink(&target_file, &symlink_file).unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.case_transform = CaseTransform::Lowercase;
+        opts.include_symlinks = false; // default
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_dir).unwrap();
+
+        // Only the target file should be renamed, symlink should be skipped
+        assert_eq!(count, 1);
+        assert!(test_dir.join("target.txt").exists());
+
+        // Check that symlink still has uppercase name by listing directory
+        let entries: Vec<_> = fs::read_dir(&test_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(entries.iter().any(|n| n == "SymLink.txt"), "Symlink should retain original uppercase name");
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinks_included_when_enabled() {
+        use std::os::unix::fs::symlink;
+
+        let test_dir = std::env::temp_dir().join("refmt_rename_symlink_include");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&test_dir).unwrap();
+
+        // Create a regular file (already lowercase)
+        let target_file = test_dir.join("target.txt");
+        fs::write(&target_file, "content").unwrap();
+
+        // Create a symlink to the file with uppercase name
+        let symlink_file = test_dir.join("SymLink.txt");
+        symlink(&target_file, &symlink_file).unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.case_transform = CaseTransform::Lowercase;
+        opts.include_symlinks = true;
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_dir).unwrap();
+
+        // Only symlink should be renamed (target is already lowercase)
+        assert_eq!(count, 1);
+        assert!(test_dir.join("target.txt").exists());
+
+        // Check that symlink was renamed to lowercase by listing directory
+        let entries: Vec<_> = fs::read_dir(&test_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(entries.iter().any(|n| n == "symlink.txt"), "Symlink should be renamed to lowercase");
+        assert!(!entries.iter().any(|n| n == "SymLink.txt"), "Original uppercase symlink name should be gone");
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_with_uppercase_target() {
+        use std::os::unix::fs::symlink;
+
+        let test_dir = std::env::temp_dir().join("refmt_rename_symlink_both");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&test_dir).unwrap();
+
+        // Create a regular file with uppercase
+        let target_file = test_dir.join("Target.txt");
+        fs::write(&target_file, "content").unwrap();
+
+        // Create a symlink to the file
+        let symlink_file = test_dir.join("SymLink.txt");
+        symlink(&target_file, &symlink_file).unwrap();
+
+        let mut opts = RenameOptions::default();
+        opts.case_transform = CaseTransform::Lowercase;
+        opts.include_symlinks = true;
+
+        let renamer = FileRenamer::new(opts);
+        let count = renamer.process(&test_dir).unwrap();
+
+        // Both should be renamed
+        assert_eq!(count, 2);
+
+        // Check files by listing directory (handles case-insensitive filesystems)
+        let entries: Vec<_> = fs::read_dir(&test_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(entries.iter().any(|n| n == "target.txt"), "Target file should be renamed to lowercase");
+        assert!(entries.iter().any(|n| n == "symlink.txt"), "Symlink should be renamed to lowercase");
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
