@@ -9,6 +9,7 @@ description = "Core library for text and file reformatting"
 
 [dependencies]
 regex.workspace = true
+aho-corasick.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true

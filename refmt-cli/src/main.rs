@@ -9,7 +9,7 @@ use log::{debug, error, info};
 use logging_timer::time;
 use simplelog::*;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -317,6 +317,10 @@ enum Commands {
         /// Directory to scan recursively for broken references caused by the grouping
         #[arg(long = "scope")]
         scope: Option<PathBuf>,
+
+        /// Show verbose output during reference scanning (useful for debugging hangs)
+        #[arg(long = "verbose-scan")]
+        verbose_scan: bool,
     },
 }
 
@@ -730,6 +734,39 @@ fn prompt_yes_no(question: &str) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Checks if scope_path contains or is a parent of target_path
+/// Returns a warning message if there's an overlap, None otherwise
+fn check_scope_overlap(scope_path: &Path, target_path: &Path) -> Option<String> {
+    // Canonicalize both paths for accurate comparison
+    let scope_canonical = scope_path.canonicalize().unwrap_or_else(|_| scope_path.to_path_buf());
+    let target_canonical = target_path.canonicalize().unwrap_or_else(|_| target_path.to_path_buf());
+
+    // Check if scope contains target (scope is parent of target)
+    if target_canonical.starts_with(&scope_canonical) {
+        return Some(format!(
+            "Warning: --scope '{}' contains the target directory '{}'\n\
+             This will scan the newly created group directories and may be slow.\n\
+             Consider using a more specific --scope that only includes directories\n\
+             with files that reference the moved files (e.g., --scope ./src).",
+            scope_path.display(),
+            target_path.display()
+        ));
+    }
+
+    // Check if target contains scope (target is parent of scope) - less common but worth noting
+    if scope_canonical.starts_with(&target_canonical) {
+        return Some(format!(
+            "Warning: --scope '{}' is inside the target directory '{}'.\n\
+             This is unusual - typically --scope should point to directories\n\
+             containing files that reference the moved files.",
+            scope_path.display(),
+            target_path.display()
+        ));
+    }
+
+    None
+}
+
 /// Prompts the user for directories to scan
 fn prompt_scan_dirs(default_dir: &PathBuf) -> Vec<PathBuf> {
     print!("Enter directories to scan (comma-separated, or press Enter for '{}'): ", default_dir.display());
@@ -758,6 +795,7 @@ fn run_group(
     preview: bool,
     no_interactive: bool,
     scope: Option<PathBuf>,
+    verbose_scan: bool,
 ) -> anyhow::Result<()> {
     info!("Grouping files by prefix in: {}", path.display());
     info!(
@@ -836,11 +874,28 @@ fn run_group(
                         prompt_scan_dirs(&path)
                     };
 
+                    // Check for scope/target overlap and warn
+                    for scan_dir in &dirs_to_scan {
+                        if let Some(warning) = check_scope_overlap(scan_dir, &path) {
+                            eprintln!("\n{}\n", warning);
+                        }
+                    }
+
                     // Scan for broken references
-                    let spinner = create_spinner("Scanning for broken references...");
-                    let scanner = ReferenceScanner::from_change_record(&result.changes, ScanOptions::default());
+                    let mut scan_options = ScanOptions::default();
+                    scan_options.verbose = verbose_scan;
+
+                    let spinner = if verbose_scan {
+                        eprintln!("Scanning for broken references...");
+                        None
+                    } else {
+                        Some(create_spinner("Scanning for broken references..."))
+                    };
+                    let scanner = ReferenceScanner::from_change_record(&result.changes, scan_options);
                     let fix_record = scanner.scan(&dirs_to_scan)?;
-                    spinner.finish_and_clear();
+                    if let Some(s) = spinner {
+                        s.finish_and_clear();
+                    }
 
                     if fix_record.is_empty() {
                         println!("No broken references found.");
@@ -888,10 +943,28 @@ fn run_group(
             } else if !dry_run && scope.is_some() {
                 // Non-interactive mode with --scope specified
                 let dirs_to_scan = vec![scope.unwrap()];
-                let spinner = create_spinner("Scanning for broken references...");
-                let scanner = ReferenceScanner::from_change_record(&result.changes, ScanOptions::default());
+
+                // Check for scope/target overlap and warn
+                for scan_dir in &dirs_to_scan {
+                    if let Some(warning) = check_scope_overlap(scan_dir, &path) {
+                        eprintln!("\n{}\n", warning);
+                    }
+                }
+
+                let mut scan_options = ScanOptions::default();
+                scan_options.verbose = verbose_scan;
+
+                let spinner = if verbose_scan {
+                    eprintln!("Scanning for broken references...");
+                    None
+                } else {
+                    Some(create_spinner("Scanning for broken references..."))
+                };
+                let scanner = ReferenceScanner::from_change_record(&result.changes, scan_options);
                 let fix_record = scanner.scan(&dirs_to_scan)?;
-                spinner.finish_and_clear();
+                if let Some(s) = spinner {
+                    s.finish_and_clear();
+                }
 
                 if fix_record.is_empty() {
                     println!("\nNo broken references found.");
@@ -1122,6 +1195,7 @@ fn main() -> anyhow::Result<()> {
                 preview,
                 no_interactive,
                 scope,
+                verbose_scan,
             } => {
                 debug!("Running group subcommand");
                 run_group(
@@ -1134,6 +1208,7 @@ fn main() -> anyhow::Result<()> {
                     preview,
                     no_interactive,
                     scope,
+                    verbose_scan,
                 )
             }
         }

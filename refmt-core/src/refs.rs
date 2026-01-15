@@ -4,7 +4,7 @@
 //! moved/renamed files and generate fixes for those references.
 
 use crate::changes::ChangeRecord;
-use regex::Regex;
+use aho_corasick::AhoCorasick;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -90,6 +90,8 @@ pub struct ScanOptions {
     pub exclude_patterns: Vec<String>,
     /// Whether to scan recursively
     pub recursive: bool,
+    /// Whether to print verbose output during scanning
+    pub verbose: bool,
 }
 
 impl Default for ScanOptions {
@@ -132,6 +134,7 @@ impl Default for ScanOptions {
                 "build".to_string(),
             ],
             recursive: true,
+            verbose: false,
         }
     }
 }
@@ -141,48 +144,78 @@ pub struct ReferenceScanner {
     options: ScanOptions,
     /// Map of old filename -> new path
     file_moves: HashMap<String, String>,
+    /// Aho-Corasick automaton for O(n) multi-pattern matching
+    automaton: AhoCorasick,
+    /// Ordered list of patterns (index matches automaton pattern indices)
+    patterns: Vec<String>,
 }
 
 impl ReferenceScanner {
     /// Creates a new reference scanner from a change record
     pub fn from_change_record(record: &ChangeRecord, options: ScanOptions) -> Self {
         let mut file_moves = HashMap::new();
-        
+
         for (from, to) in record.file_moves() {
             // Extract just the filename from the 'from' path
             let from_filename = Path::new(from)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(from);
-            
+
             file_moves.insert(from_filename.to_string(), to.to_string());
-            
+
             // Also add the full path as a key
             if from != from_filename {
                 file_moves.insert(from.to_string(), to.to_string());
             }
         }
-        
-        ReferenceScanner { options, file_moves }
+
+        Self::new(file_moves, options)
     }
 
     /// Creates a scanner from a mapping of old -> new paths
     pub fn new(file_moves: HashMap<String, String>, options: ScanOptions) -> Self {
-        ReferenceScanner { options, file_moves }
+        // Build the Aho-Corasick automaton for O(n) multi-pattern matching
+        let patterns: Vec<String> = file_moves.keys().cloned().collect();
+        let automaton = AhoCorasick::new(&patterns).expect("Failed to build Aho-Corasick automaton");
+
+        ReferenceScanner {
+            options,
+            file_moves,
+            automaton,
+            patterns,
+        }
     }
 
-    /// Checks if a path should be excluded from scanning
-    fn should_exclude(&self, path: &Path) -> bool {
-        for component in path.components() {
-            if let Some(name) = component.as_os_str().to_str() {
-                for pattern in &self.options.exclude_patterns {
-                    if name == pattern || name.starts_with('.') {
-                        return true;
-                    }
-                }
+    /// Checks if a directory entry should be excluded from scanning
+    /// Used with filter_entry to prune entire subtrees before descending
+    fn should_include_entry(
+        entry: &walkdir::DirEntry,
+        exclude_patterns: &[String],
+        verbose: bool,
+    ) -> bool {
+        let name = match entry.file_name().to_str() {
+            Some(n) => n,
+            None => return false, // Skip entries with invalid UTF-8 names
+        };
+
+        // Skip hidden files/directories
+        if name.starts_with('.') {
+            if verbose && entry.file_type().is_dir() {
+                eprintln!("  [skip] {} (hidden)", entry.path().display());
             }
+            return false;
         }
-        false
+
+        // Skip excluded patterns
+        if exclude_patterns.iter().any(|p| p == name) {
+            if verbose && entry.file_type().is_dir() {
+                eprintln!("  [skip] {} (excluded pattern: {})", entry.path().display(), name);
+            }
+            return false;
+        }
+
+        true
     }
 
     /// Checks if a file should be scanned based on extension
@@ -199,94 +232,134 @@ impl ReferenceScanner {
         }
     }
 
-    /// Scans a file for references to moved files
+    /// Scans a file for references to moved files using Aho-Corasick for O(n) matching
     fn scan_file(&self, path: &Path) -> crate::Result<Vec<ReferenceFix>> {
-        let mut fixes = Vec::new();
         let content = fs::read_to_string(path)?;
-        
-        for (line_num, line) in content.lines().enumerate() {
-            for (old_ref, new_ref) in &self.file_moves {
-                // Look for the old reference in various contexts
-                // This handles: "filename", 'filename', `filename`, /path/filename, etc.
-                if let Some(col) = self.find_reference(line, old_ref) {
-                    fixes.push(ReferenceFix {
-                        file: path.to_string_lossy().to_string(),
-                        line: line_num + 1,
-                        column: col + 1,
-                        context: line.trim().to_string(),
-                        old_reference: old_ref.clone(),
-                        new_reference: new_ref.clone(),
-                    });
-                }
-            }
-        }
-        
-        Ok(fixes)
-    }
 
-    /// Finds a reference in a line, returning the column if found
-    fn find_reference(&self, line: &str, reference: &str) -> Option<usize> {
-        // Escape special regex characters in the reference
-        let escaped = regex::escape(reference);
-        
-        // Build pattern to match the reference in various contexts
-        // This matches: quoted strings, paths, template includes, etc.
-        let pattern = format!(
-            r#"(?:["'`]|/|\\|^|\s)({})(?:["'`]|/|\\|$|\s|[,;:\)>\]])"#,
-            escaped
-        );
-        
-        if let Ok(re) = Regex::new(&pattern) {
-            if let Some(m) = re.find(line) {
-                // Find the actual start of the reference within the match
-                if let Some(pos) = line[m.start()..].find(reference) {
-                    return Some(m.start() + pos);
-                }
-            }
+        if self.patterns.is_empty() {
+            return Ok(Vec::new());
         }
-        
-        // Fallback: simple contains check for cases the regex misses
-        if line.contains(reference) {
-            return line.find(reference);
+
+        // Build line index for efficient line/column lookup
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(content.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+
+        let mut fixes = Vec::new();
+        let file_path_str = path.to_string_lossy().to_string();
+
+        // Single pass through the file using Aho-Corasick
+        for mat in self.automaton.find_iter(&content) {
+            let pattern_idx = mat.pattern().as_usize();
+            let old_ref = &self.patterns[pattern_idx];
+            let new_ref = match self.file_moves.get(old_ref) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            // Binary search to find line number
+            let byte_pos = mat.start();
+            let line_idx = line_starts.partition_point(|&start| start <= byte_pos) - 1;
+            let line_start = line_starts[line_idx];
+            let column = byte_pos - line_start;
+
+            // Extract line content for context
+            let line_end = line_starts
+                .get(line_idx + 1)
+                .map(|&s| s.saturating_sub(1))
+                .unwrap_or(content.len());
+            let line_content = &content[line_start..line_end];
+
+            fixes.push(ReferenceFix {
+                file: file_path_str.clone(),
+                line: line_idx + 1,
+                column: column + 1,
+                context: line_content.trim().to_string(),
+                old_reference: old_ref.clone(),
+                new_reference: new_ref.clone(),
+            });
         }
-        
-        None
+
+        Ok(fixes)
     }
 
     /// Scans directories for broken references
     pub fn scan(&self, directories: &[PathBuf]) -> crate::Result<FixRecord> {
         let mut fix_record = FixRecord::new("changes.json", directories);
-        
+        let verbose = self.options.verbose;
+        let mut files_scanned = 0;
+
         for dir in directories {
             if !dir.exists() {
+                if verbose {
+                    eprintln!("[scan] Directory does not exist: {}", dir.display());
+                }
                 continue;
             }
-            
+
+            if verbose {
+                eprintln!("[scan] Starting scan of: {}", dir.display());
+            }
+
             let walker = if self.options.recursive {
-                WalkDir::new(dir).into_iter()
+                WalkDir::new(dir)
             } else {
-                WalkDir::new(dir).max_depth(1).into_iter()
+                WalkDir::new(dir).max_depth(1)
             };
-            
+
+            // Use filter_entry to prune excluded directories BEFORE descending into them.
+            // This prevents walking into node_modules, .git, target, etc. entirely,
+            // rather than entering them and then skipping files one by one.
+            let exclude_patterns = &self.options.exclude_patterns;
+            let walker = walker
+                .into_iter()
+                .filter_entry(|e| Self::should_include_entry(e, exclude_patterns, verbose));
+
             for entry in walker.filter_map(|e| e.ok()) {
                 let path = entry.path();
-                
-                if self.should_exclude(path) {
+
+                // Print when entering a new directory
+                if verbose && entry.file_type().is_dir() {
+                    eprintln!("[scan] Entering directory: {}", path.display());
                     continue;
                 }
-                
-                if !path.is_file() || !self.should_scan_file(path) {
+
+                if !path.is_file() {
                     continue;
                 }
-                
+
+                if !self.should_scan_file(path) {
+                    if verbose {
+                        eprintln!("  [skip] {} (extension not in scan list)", path.display());
+                    }
+                    continue;
+                }
+
+                if verbose {
+                    eprintln!("  [file] {}", path.display());
+                }
+                files_scanned += 1;
+
                 match self.scan_file(path) {
-                    Ok(fixes) => fix_record.fixes.extend(fixes),
+                    Ok(fixes) => {
+                        if verbose && !fixes.is_empty() {
+                            eprintln!("    -> Found {} reference(s)", fixes.len());
+                        }
+                        fix_record.fixes.extend(fixes);
+                    }
                     Err(e) => {
-                        // Skip files we can't read (binary, permissions, etc.)
+                        if verbose {
+                            eprintln!("    -> Error: {}", e);
+                        }
                         log::debug!("Skipping {}: {}", path.display(), e);
                     }
                 }
             }
+        }
+
+        if verbose {
+            eprintln!("[scan] Complete. Scanned {} files, found {} references.",
+                     files_scanned, fix_record.fixes.len());
         }
         
         // Deduplicate fixes (same file/line might have multiple matches)
@@ -402,14 +475,32 @@ mod tests {
 
     #[test]
     fn test_find_reference_quoted() {
+        let test_dir = create_test_dir("quoted");
+
         let mut moves = HashMap::new();
         moves.insert("old.tmpl".to_string(), "new/old.tmpl".to_string());
-        
+
         let scanner = ReferenceScanner::new(moves, ScanOptions::default());
-        
-        assert!(scanner.find_reference(r#"include "old.tmpl""#, "old.tmpl").is_some());
-        assert!(scanner.find_reference(r#"include 'old.tmpl'"#, "old.tmpl").is_some());
-        assert!(scanner.find_reference(r#"template: old.tmpl"#, "old.tmpl").is_some());
+
+        // Test with double quotes
+        let file1 = test_dir.join("test1.go");
+        fs::write(&file1, r#"include "old.tmpl""#).unwrap();
+        let fixes = scanner.scan_file(&file1).unwrap();
+        assert_eq!(fixes.len(), 1);
+
+        // Test with single quotes
+        let file2 = test_dir.join("test2.go");
+        fs::write(&file2, r#"include 'old.tmpl'"#).unwrap();
+        let fixes = scanner.scan_file(&file2).unwrap();
+        assert_eq!(fixes.len(), 1);
+
+        // Test with colon prefix
+        let file3 = test_dir.join("test3.yaml");
+        fs::write(&file3, "template: old.tmpl").unwrap();
+        let fixes = scanner.scan_file(&file3).unwrap();
+        assert_eq!(fixes.len(), 1);
+
+        let _ = fs::remove_dir_all(&test_dir);
     }
 
     #[test]
@@ -523,11 +614,31 @@ template: old_file.tmpl
 
     #[test]
     fn test_exclude_patterns() {
-        let scanner = ReferenceScanner::new(HashMap::new(), ScanOptions::default());
-        
-        assert!(scanner.should_exclude(Path::new("/project/.git/config")));
-        assert!(scanner.should_exclude(Path::new("/project/node_modules/pkg/index.js")));
-        assert!(scanner.should_exclude(Path::new("/project/target/debug/main")));
-        assert!(!scanner.should_exclude(Path::new("/project/src/main.rs")));
+        let test_dir = create_test_dir("exclude");
+
+        // Create a directory structure with excluded directories
+        let node_modules = test_dir.join("node_modules");
+        let git_dir = test_dir.join(".git");
+        let src_dir = test_dir.join("src");
+        fs::create_dir_all(&node_modules).unwrap();
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::create_dir_all(&src_dir).unwrap();
+
+        // Create files in each directory that reference "old.tmpl"
+        fs::write(node_modules.join("index.js"), "require('old.tmpl')").unwrap();
+        fs::write(git_dir.join("config"), "path = old.tmpl").unwrap();
+        fs::write(src_dir.join("main.rs"), r#"include!("old.tmpl")"#).unwrap();
+
+        let mut moves = HashMap::new();
+        moves.insert("old.tmpl".to_string(), "new/old.tmpl".to_string());
+
+        let scanner = ReferenceScanner::new(moves, ScanOptions::default());
+        let fix_record = scanner.scan(&[test_dir.clone()]).unwrap();
+
+        // Only src/main.rs should be scanned - node_modules and .git should be excluded
+        assert_eq!(fix_record.len(), 1);
+        assert!(fix_record.fixes[0].file.contains("src"));
+
+        let _ = fs::remove_dir_all(&test_dir);
     }
 }

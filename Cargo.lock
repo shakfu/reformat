@@ -456,6 +456,7 @@ dependencies = [
 name = "refmt-core"
 version = "0.2.2"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "chrono",
  "glob",
