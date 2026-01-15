@@ -5,6 +5,104 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-01-15
+
+### Added
+
+#### File Grouping Command (`group`)
+- **New `group` subcommand** for organizing files by common prefix into subdirectories
+  - Analyzes files in a directory and identifies common prefixes
+  - Creates subdirectories matching file prefixes
+  - Moves files into their respective subdirectories
+  - Optional prefix stripping from filenames after moving
+
+- **Use cases**:
+  - Organize template files: `wbs_create.tmpl`, `wbs_delete.tmpl` → `wbs/create.tmpl`, `wbs/delete.tmpl`
+  - Group related files by naming convention
+  - Clean up flat directory structures into organized hierarchies
+
+- **Command options**:
+  - `-d, --dry-run`: Preview changes without modifying files
+  - `-r, --recursive`: Process subdirectories recursively
+  - `-s, --separator <CHAR>`: Separator character (default: `_`)
+  - `-m, --min-count <N>`: Minimum files to create a group (default: 2)
+  - `--strip-prefix`: Remove prefix from filenames after moving
+  - `--preview`: Show groups that would be created without making changes
+  - `--no-interactive`: Skip interactive prompts
+  - `--scope <DIR>`: Directory to scan recursively for broken references
+
+- **Example transformations**:
+  ```
+  # Without --strip-prefix:
+  wbs_create.tmpl → wbs/wbs_create.tmpl
+  
+  # With --strip-prefix:
+  wbs_create.tmpl → wbs/create.tmpl
+  work_package_list.tmpl → work/package_list.tmpl
+  ```
+
+#### Broken Reference Detection and Fixing
+- **Automatic change tracking**: After grouping, generates `changes.json` with a complete record of all file operations
+- **Interactive workflow**: Prompts user to scan for broken references after grouping
+- **Reference scanning**: Scans codebase for references to moved/renamed files
+  - Searches quoted strings, paths, template includes, config files
+  - Supports common file types: Go, Python, JS/TS, Rust, Java, YAML, JSON, HTML, etc.
+  - Automatically excludes `.git`, `node_modules`, `target`, etc.
+- **Fix generation**: Creates `fixes.json` with proposed fixes including:
+  - File location (path, line, column)
+  - Context (surrounding code)
+  - Old and new reference values
+- **Fix application**: User reviews `fixes.json` and confirms before applying changes
+
+- **Example workflow**:
+  ```bash
+  $ refmt group --strip-prefix templates/
+  Created directory: templates/wbs
+  Moved and renamed 'wbs_create.tmpl' -> 'wbs/create.tmpl'
+  
+  Changes recorded to: changes.json
+  
+  Would you like to scan for broken references? [y/N]: y
+  Enter directories to scan: src
+  
+  Found 2 broken reference(s).
+  Proposed fixes written to: fixes.json
+  
+  Review fixes.json and apply changes? [y/N]: y
+  Fixed 2 reference(s) in 2 file(s).
+  ```
+
+- **Non-interactive mode**:
+  ```bash
+  refmt group --strip-prefix --no-interactive --scope src templates/
+  ```
+
+#### New Core Modules
+- **FileGrouper** (`refmt-core/src/group.rs`)
+  - `GroupOptions` struct for configuration
+  - `GroupStats` and `GroupResult` for operation statistics and change tracking
+  - `preview()` method for dry analysis
+  - `process_with_changes()` for full change tracking
+  - Full support for dry-run and recursive modes
+
+- **ChangeRecord** (`refmt-core/src/changes.rs`)
+  - Tracks all changes from refactoring operations
+  - Serializable to JSON for persistence
+  - Records: directories created, files moved, files renamed
+
+- **ReferenceScanner** (`refmt-core/src/refs.rs`)
+  - Scans files for references to moved/renamed files
+  - Configurable file extensions and exclusion patterns
+  - `FixRecord` for proposed fixes
+  - `ReferenceFixer` for applying fixes
+
+### Testing
+- Added 12 new unit tests for `FileGrouper`
+- Added 5 new unit tests for `ChangeRecord`
+- Added 6 new unit tests for `ReferenceScanner` and `ReferenceFixer`
+- Tests cover: basic grouping, prefix stripping, dry-run mode, recursive processing, custom separators, minimum count thresholds, reference detection, fix application
+- All 94 tests passing
+
 ## [0.3.0] - 2025-10-19
 
 ### Added

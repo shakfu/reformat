@@ -1,13 +1,14 @@
 use clap::{Parser, Subcommand};
 use refmt_core::{
     CaseConverter, CaseFormat, CaseTransform, CombinedOptions, CombinedProcessor, EmojiOptions,
-    EmojiTransformer, FileRenamer, RenameOptions, SpaceReplace, TimestampFormat,
-    WhitespaceCleaner, WhitespaceOptions,
+    EmojiTransformer, FileGrouper, FileRenamer, GroupOptions, ReferenceFixer, ReferenceScanner,
+    RenameOptions, ScanOptions, SpaceReplace, TimestampFormat, WhitespaceCleaner, WhitespaceOptions,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info};
 use logging_timer::time;
 use simplelog::*;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -277,6 +278,45 @@ enum Commands {
         /// Add timestamp prefix in YYMMDD format (e.g., 250915_)
         #[arg(long = "timestamp-short")]
         timestamp_short: bool,
+    },
+
+    /// Group files by common prefix into subdirectories
+    #[command(name = "group")]
+    Group {
+        /// The directory to process
+        path: PathBuf,
+
+        /// Process subdirectories recursively
+        #[arg(short = 'r', long)]
+        recursive: bool,
+
+        /// Dry run (don't move files or create directories)
+        #[arg(short = 'd', long = "dry-run")]
+        dry_run: bool,
+
+        /// Separator character that divides prefix from rest of filename
+        #[arg(short = 's', long = "separator", default_value_t = '_')]
+        separator: char,
+
+        /// Minimum number of files with same prefix to create a group
+        #[arg(short = 'm', long = "min-count", default_value_t = 2)]
+        min_count: usize,
+
+        /// Remove the prefix from filenames after moving to subdirectory
+        #[arg(long = "strip-prefix")]
+        strip_prefix: bool,
+
+        /// Preview groups without making changes (shows what would be grouped)
+        #[arg(long = "preview")]
+        preview: bool,
+
+        /// Skip interactive prompts for reference scanning
+        #[arg(long = "no-interactive")]
+        no_interactive: bool,
+
+        /// Directory to scan recursively for broken references caused by the grouping
+        #[arg(long = "scope")]
+        scope: Option<PathBuf>,
     },
 }
 
@@ -677,6 +717,200 @@ fn run_rename(
     Ok(())
 }
 
+/// Prompts the user for a yes/no answer
+fn prompt_yes_no(question: &str) -> bool {
+    print!("{} [y/N]: ", question);
+    io::stdout().flush().unwrap();
+    
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+/// Prompts the user for directories to scan
+fn prompt_scan_dirs(default_dir: &PathBuf) -> Vec<PathBuf> {
+    print!("Enter directories to scan (comma-separated, or press Enter for '{}'): ", default_dir.display());
+    io::stdout().flush().unwrap();
+    
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() || input.trim().is_empty() {
+        return vec![default_dir.clone()];
+    }
+    
+    input
+        .trim()
+        .split(',')
+        .map(|s| PathBuf::from(s.trim()))
+        .collect()
+}
+
+#[time("info")]
+fn run_group(
+    path: PathBuf,
+    recursive: bool,
+    dry_run: bool,
+    separator: char,
+    min_count: usize,
+    strip_prefix: bool,
+    preview: bool,
+    no_interactive: bool,
+    scope: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    info!("Grouping files by prefix in: {}", path.display());
+    info!(
+        "Recursive: {}, Dry run: {}, Separator: '{}', Min count: {}",
+        recursive, dry_run, separator, min_count
+    );
+    if strip_prefix {
+        info!("Strip prefix: enabled");
+    }
+
+    let mut options = GroupOptions::default();
+    options.recursive = recursive;
+    options.dry_run = dry_run;
+    options.separator = separator;
+    options.min_count = min_count;
+    options.strip_prefix = strip_prefix;
+
+    let grouper = FileGrouper::new(options);
+
+    if preview {
+        let spinner = create_spinner("Analyzing files...");
+        let groups = grouper.preview(&path)?;
+        spinner.finish_and_clear();
+
+        if groups.is_empty() {
+            println!("No file groups found matching criteria (min_count: {})", min_count);
+        } else {
+            println!("Found {} potential group(s):", groups.len());
+            for (prefix, files) in &groups {
+                println!("\n  {} ({} files):", prefix, files.len());
+                for file in files {
+                    println!("    - {}", file);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let spinner = create_spinner("Grouping files...");
+    let result = grouper.process_with_changes(&path)?;
+    spinner.finish_and_clear();
+
+    let stats = &result.stats;
+
+    if stats.files_moved > 0 {
+        let prefix_str = if dry_run { "[DRY-RUN] " } else { "" };
+        info!(
+            "{}Grouping complete: {} directories created, {} files moved",
+            prefix_str, stats.dirs_created, stats.files_moved
+        );
+        println!(
+            "{}Grouping complete:",
+            prefix_str
+        );
+        if stats.dirs_created > 0 {
+            println!("  - Directories created: {}", stats.dirs_created);
+        }
+        println!("  - Files moved: {}", stats.files_moved);
+        if stats.files_renamed > 0 {
+            println!("  - Files renamed (prefix stripped): {}", stats.files_renamed);
+        }
+
+        // Write changes.json (even in dry-run mode, for reference)
+        if !result.changes.is_empty() {
+            let changes_path = std::env::current_dir()?.join("changes.json");
+            result.changes.write_to_file(&changes_path)?;
+            println!("\nChanges recorded to: {}", changes_path.display());
+
+            // Interactive workflow for reference scanning
+            if !dry_run && !no_interactive {
+                println!();
+                if prompt_yes_no("Would you like to scan for broken references?") {
+                    let dirs_to_scan = if let Some(dir) = scope {
+                        vec![dir]
+                    } else {
+                        prompt_scan_dirs(&path)
+                    };
+
+                    // Scan for broken references
+                    let spinner = create_spinner("Scanning for broken references...");
+                    let scanner = ReferenceScanner::from_change_record(&result.changes, ScanOptions::default());
+                    let fix_record = scanner.scan(&dirs_to_scan)?;
+                    spinner.finish_and_clear();
+
+                    if fix_record.is_empty() {
+                        println!("No broken references found.");
+                    } else {
+                        // Write fixes.json
+                        let fixes_path = std::env::current_dir()?.join("fixes.json");
+                        fix_record.write_to_file(&fixes_path)?;
+                        println!("\nFound {} broken reference(s).", fix_record.len());
+                        println!("Proposed fixes written to: {}", fixes_path.display());
+
+                        // Show summary of fixes
+                        println!("\nProposed fixes:");
+                        for fix in fix_record.fixes.iter().take(10) {
+                            println!(
+                                "  {}:{}: '{}' -> '{}'",
+                                fix.file, fix.line, fix.old_reference, fix.new_reference
+                            );
+                        }
+                        if fix_record.len() > 10 {
+                            println!("  ... and {} more (see fixes.json)", fix_record.len() - 10);
+                        }
+
+                        println!();
+                        if prompt_yes_no("Review fixes.json and apply changes?") {
+                            let spinner = create_spinner("Applying fixes...");
+                            let apply_result = ReferenceFixer::apply_fixes(&fix_record)?;
+                            spinner.finish_and_clear();
+
+                            println!(
+                                "\nFixed {} reference(s) in {} file(s).",
+                                apply_result.references_fixed, apply_result.files_modified
+                            );
+
+                            if !apply_result.errors.is_empty() {
+                                println!("\nErrors encountered:");
+                                for err in &apply_result.errors {
+                                    println!("  - {}", err);
+                                }
+                            }
+                        } else {
+                            println!("Fixes not applied. You can review fixes.json and apply them later.");
+                        }
+                    }
+                }
+            } else if !dry_run && scope.is_some() {
+                // Non-interactive mode with --scope specified
+                let dirs_to_scan = vec![scope.unwrap()];
+                let spinner = create_spinner("Scanning for broken references...");
+                let scanner = ReferenceScanner::from_change_record(&result.changes, ScanOptions::default());
+                let fix_record = scanner.scan(&dirs_to_scan)?;
+                spinner.finish_and_clear();
+
+                if fix_record.is_empty() {
+                    println!("\nNo broken references found.");
+                } else {
+                    let fixes_path = std::env::current_dir()?.join("fixes.json");
+                    fix_record.write_to_file(&fixes_path)?;
+                    println!("\nFound {} broken reference(s).", fix_record.len());
+                    println!("Proposed fixes written to: {}", fixes_path.display());
+                }
+            }
+        }
+    } else {
+        info!("No files needed grouping");
+        println!("No files needed grouping");
+    }
+
+    Ok(())
+}
+
 #[time("info")]
 fn run_combined(path: PathBuf, recursive: bool, dry_run: bool) -> anyhow::Result<()> {
     info!("Running combined transformations on: {}", path.display());
@@ -875,6 +1109,31 @@ fn main() -> anyhow::Result<()> {
                     replace_suffix,
                     timestamp_long,
                     timestamp_short,
+                )
+            }
+
+            Commands::Group {
+                path,
+                recursive,
+                dry_run,
+                separator,
+                min_count,
+                strip_prefix,
+                preview,
+                no_interactive,
+                scope,
+            } => {
+                debug!("Running group subcommand");
+                run_group(
+                    path,
+                    recursive,
+                    dry_run,
+                    separator,
+                    min_count,
+                    strip_prefix,
+                    preview,
+                    no_interactive,
+                    scope,
                 )
             }
         }

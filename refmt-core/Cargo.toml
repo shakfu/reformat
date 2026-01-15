@@ -13,6 +13,10 @@ anyhow.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
 glob.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+log.workspace = true
 
 # Optional dependencies for features
 rayon = { version = "1.8", optional = true }
