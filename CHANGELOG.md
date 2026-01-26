@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-01-26
+
+### Added
+
+#### File Grouping: Suffix-based Splitting (`--from-suffix`)
+- **New `--from-suffix` option** for grouping files by splitting at the LAST separator instead of the first
+  - Useful when files have multi-part prefixes like `activity_relationships_list.tmpl`
+  - Creates directories from the full prefix (everything before the last separator)
+  - Uses the suffix (part after last separator) as the filename
+
+- **Example transformation** with `--from-suffix`:
+  ```
+  Before:                                    After:
+  activity_relationships_list.tmpl          activity_relationships/
+  activity_relationships_create.tmpl            list.tmpl
+  activity_relationships_delete.tmpl            create.tmpl
+  activity_relationships_detail.tmpl            delete.tmpl
+  activity_relationships_edit.tmpl              detail.tmpl
+                                                edit.tmpl
+  ```
+
+- **Comparison of splitting modes**:
+  | Input | `--strip-prefix` (first sep) | `--from-suffix` (last sep) |
+  |-------|------------------------------|---------------------------|
+  | `a_b_c.txt` | `a/b_c.txt` | `a_b/c.txt` |
+  | `user_profile_edit.tmpl` | `user/profile_edit.tmpl` | `user_profile/edit.tmpl` |
+
+- **Usage**:
+  ```bash
+  refmt group --from-suffix templates/
+  ```
+
+- `--from-suffix` implicitly enables prefix stripping (no need to also specify `--strip-prefix`)
+
+### Testing
+- Added 4 new unit tests for suffix-based splitting
+- All 135 tests passing
+
 ## [0.4.0] - 2026-01-15
 
 ### Added

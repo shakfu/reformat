@@ -47,6 +47,7 @@ Organized as a Cargo workspace:
 - Organize files by common prefix into subdirectories
 - Automatically detect file prefixes based on separator character
 - Optional prefix stripping from filenames after moving
+- **Suffix-based splitting** (`--from-suffix`): Split at the LAST separator for multi-part prefixes
 - Preview mode to see what groups would be created
 - Configurable minimum file count for group creation
 - Recursive processing for nested directories
@@ -143,6 +144,7 @@ use refmt_core::{FileGrouper, GroupOptions};
 
 let mut options = GroupOptions::default();
 options.strip_prefix = true;  // Remove prefix from filenames
+options.from_suffix = false;  // Set true to split at LAST separator
 options.min_count = 2;        // Require at least 2 files to create a group
 options.dry_run = false;
 
@@ -298,6 +300,9 @@ refmt group templates/
 # Group files and strip prefix from filenames
 refmt group --strip-prefix templates/
 
+# Group by suffix (split at LAST separator) - for multi-part prefixes
+refmt group --from-suffix templates/
+
 # Process subdirectories recursively
 refmt group -r templates/
 
@@ -308,7 +313,7 @@ refmt group -s '-' templates/
 refmt group -m 3 templates/
 ```
 
-Example transformation with `--strip-prefix`:
+Example transformation with `--strip-prefix` (splits at FIRST separator):
 ```
 Before:                          After:
 templates/                       templates/
@@ -320,6 +325,20 @@ templates/                       templates/
 └── other.txt                   │   ├── package_create.tmpl
                                 │   └── package_delete.tmpl
                                 └── other.txt
+```
+
+Example transformation with `--from-suffix` (splits at LAST separator):
+```
+Before:                                    After:
+templates/                                 templates/
+├── activity_relationships_list.tmpl      ├── activity_relationships/
+├── activity_relationships_create.tmpl    │   ├── list.tmpl
+├── activity_relationships_delete.tmpl    │   ├── create.tmpl
+├── user_profile_edit.tmpl                │   └── delete.tmpl
+├── user_profile_view.tmpl                ├── user_profile/
+└── other.txt                             │   ├── edit.tmpl
+                                          │   └── view.tmpl
+                                          └── other.txt
 ```
 
 #### Broken Reference Detection
@@ -464,9 +483,15 @@ refmt emojis -e .md README.md
 
 ### File Grouping Examples
 
-Organize template files by prefix:
+Organize template files by prefix (split at first separator):
 ```bash
 refmt group --strip-prefix web/templates/
+```
+
+Organize files with multi-part prefixes (split at last separator):
+```bash
+# activity_relationships_list.tmpl -> activity_relationships/list.tmpl
+refmt group --from-suffix web/templates/
 ```
 
 Preview groups without making changes:

@@ -15,6 +15,9 @@ pub struct GroupOptions {
     pub min_count: usize,
     /// Remove the prefix from filenames after moving to subdirectory
     pub strip_prefix: bool,
+    /// Use the suffix (part after last separator) as filename, rest as directory
+    /// When true, splits at the LAST separator instead of the first
+    pub from_suffix: bool,
     /// Process directories recursively
     pub recursive: bool,
     /// Dry run mode (don't move files or create directories)
@@ -27,6 +30,7 @@ impl Default for GroupOptions {
             separator: '_',
             min_count: 2,
             strip_prefix: false,
+            from_suffix: false,
             recursive: false,
             dry_run: false,
         }
@@ -72,13 +76,37 @@ impl FileGrouper {
     }
 
     /// Extracts the prefix from a filename based on the separator
+    /// When from_suffix is true, splits at the LAST separator (e.g., "a_b_c" -> "a_b")
+    /// Otherwise splits at the FIRST separator (e.g., "a_b_c" -> "a")
     /// Returns None if no separator is found
     fn extract_prefix(&self, filename: &str) -> Option<String> {
-        // Find the first occurrence of the separator
-        if let Some(pos) = filename.find(self.options.separator) {
-            let prefix = &filename[..pos];
+        // Get the stem (filename without extension) for suffix-based splitting
+        let (stem, _ext) = if self.options.from_suffix {
+            // For from_suffix mode, we need to work with the stem to find the last separator
+            // before the extension
+            if let Some(dot_pos) = filename.rfind('.') {
+                (&filename[..dot_pos], Some(&filename[dot_pos..]))
+            } else {
+                (filename, None)
+            }
+        } else {
+            (filename, None)
+        };
+
+        let search_str = if self.options.from_suffix { stem } else { filename };
+
+        let pos = if self.options.from_suffix {
+            // Find the LAST occurrence of the separator in the stem
+            search_str.rfind(self.options.separator)
+        } else {
+            // Find the FIRST occurrence of the separator
+            search_str.find(self.options.separator)
+        };
+
+        if let Some(pos) = pos {
+            let prefix = &search_str[..pos];
             // Only return prefix if it's not empty and there's something after the separator
-            if !prefix.is_empty() && pos + 1 < filename.len() {
+            if !prefix.is_empty() && pos + 1 < search_str.len() {
                 return Some(prefix.to_string());
             }
         }
@@ -86,6 +114,7 @@ impl FileGrouper {
     }
 
     /// Strips the prefix and separator from a filename
+    /// When from_suffix is true, this strips everything up to and including the last separator
     fn strip_prefix_from_name(&self, filename: &str, prefix: &str) -> String {
         let prefix_with_sep = format!("{}{}", prefix, self.options.separator);
         if filename.starts_with(&prefix_with_sep) {
@@ -546,6 +575,139 @@ mod tests {
         assert!(test_dir.join(".hid_hidden.tmpl").exists());
 
         let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_from_suffix_basic() {
+        let test_dir = create_test_dir("from_suffix");
+
+        // Create test files with multi-part prefix
+        fs::write(test_dir.join("activity_relationships_list.tmpl"), "content").unwrap();
+        fs::write(test_dir.join("activity_relationships_create.tmpl"), "content").unwrap();
+        fs::write(test_dir.join("activity_relationships_delete.tmpl"), "content").unwrap();
+
+        let mut options = GroupOptions::default();
+        options.from_suffix = true;
+        // from_suffix implies strip_prefix for proper behavior
+        options.strip_prefix = true;
+
+        let grouper = FileGrouper::new(options);
+        let stats = grouper.process(&test_dir).unwrap();
+
+        assert_eq!(stats.dirs_created, 1);
+        assert_eq!(stats.files_moved, 3);
+        assert_eq!(stats.files_renamed, 3);
+
+        // Directory should be named after the full prefix (everything before last separator)
+        assert!(test_dir.join("activity_relationships").is_dir());
+
+        // Files should be renamed to just the suffix + extension
+        assert!(test_dir.join("activity_relationships").join("list.tmpl").exists());
+        assert!(test_dir.join("activity_relationships").join("create.tmpl").exists());
+        assert!(test_dir.join("activity_relationships").join("delete.tmpl").exists());
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_from_suffix_mixed_prefixes() {
+        let test_dir = create_test_dir("from_suffix_mixed");
+
+        // Create test files with different multi-part prefixes
+        fs::write(test_dir.join("user_profile_edit.tmpl"), "content").unwrap();
+        fs::write(test_dir.join("user_profile_view.tmpl"), "content").unwrap();
+        fs::write(test_dir.join("project_settings_edit.tmpl"), "content").unwrap();
+        fs::write(test_dir.join("project_settings_view.tmpl"), "content").unwrap();
+
+        let mut options = GroupOptions::default();
+        options.from_suffix = true;
+        options.strip_prefix = true;
+
+        let grouper = FileGrouper::new(options);
+        let stats = grouper.process(&test_dir).unwrap();
+
+        assert_eq!(stats.dirs_created, 2);
+        assert_eq!(stats.files_moved, 4);
+
+        // Check both directories were created
+        assert!(test_dir.join("user_profile").is_dir());
+        assert!(test_dir.join("project_settings").is_dir());
+
+        // Check files are in the right places
+        assert!(test_dir.join("user_profile").join("edit.tmpl").exists());
+        assert!(test_dir.join("user_profile").join("view.tmpl").exists());
+        assert!(test_dir.join("project_settings").join("edit.tmpl").exists());
+        assert!(test_dir.join("project_settings").join("view.tmpl").exists());
+
+        let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn test_from_suffix_vs_default() {
+        // Test that from_suffix produces different results than default
+        let test_dir = create_test_dir("suffix_vs_default");
+
+        // Create test files
+        fs::write(test_dir.join("a_b_c.txt"), "content").unwrap();
+        fs::write(test_dir.join("a_b_d.txt"), "content").unwrap();
+
+        // With default behavior (split at first separator)
+        let mut options = GroupOptions::default();
+        options.strip_prefix = true;
+
+        let grouper = FileGrouper::new(options);
+        let stats = grouper.process(&test_dir).unwrap();
+
+        assert_eq!(stats.dirs_created, 1);
+        // Directory is "a", files are "b_c.txt" and "b_d.txt"
+        assert!(test_dir.join("a").is_dir());
+        assert!(test_dir.join("a").join("b_c.txt").exists());
+        assert!(test_dir.join("a").join("b_d.txt").exists());
+
+        let _ = fs::remove_dir_all(&test_dir);
+
+        // Now with from_suffix (split at last separator)
+        let test_dir2 = create_test_dir("suffix_vs_default2");
+        fs::write(test_dir2.join("a_b_c.txt"), "content").unwrap();
+        fs::write(test_dir2.join("a_b_d.txt"), "content").unwrap();
+
+        let mut options2 = GroupOptions::default();
+        options2.from_suffix = true;
+        options2.strip_prefix = true;
+
+        let grouper2 = FileGrouper::new(options2);
+        let stats2 = grouper2.process(&test_dir2).unwrap();
+
+        assert_eq!(stats2.dirs_created, 1);
+        // Directory is "a_b", files are "c.txt" and "d.txt"
+        assert!(test_dir2.join("a_b").is_dir());
+        assert!(test_dir2.join("a_b").join("c.txt").exists());
+        assert!(test_dir2.join("a_b").join("d.txt").exists());
+
+        let _ = fs::remove_dir_all(&test_dir2);
+    }
+
+    #[test]
+    fn test_extract_prefix_from_suffix() {
+        let mut options = GroupOptions::default();
+        options.from_suffix = true;
+        let grouper = FileGrouper::new(options);
+
+        // With from_suffix, should return everything before the LAST separator
+        assert_eq!(
+            grouper.extract_prefix("activity_relationships_list.tmpl"),
+            Some("activity_relationships".to_string())
+        );
+        assert_eq!(
+            grouper.extract_prefix("a_b_c.txt"),
+            Some("a_b".to_string())
+        );
+        assert_eq!(
+            grouper.extract_prefix("single_part.txt"),
+            Some("single".to_string())
+        );
+        // No separator
+        assert_eq!(grouper.extract_prefix("noseparator.txt"), None);
     }
 
     #[test]

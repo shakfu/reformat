@@ -306,6 +306,12 @@ enum Commands {
         #[arg(long = "strip-prefix")]
         strip_prefix: bool,
 
+        /// Group by suffix: split at LAST separator, use suffix as filename
+        /// e.g., "activity_relationships_list.tmpl" -> "activity_relationships/list.tmpl"
+        /// Implies --strip-prefix
+        #[arg(long = "from-suffix")]
+        from_suffix: bool,
+
         /// Preview groups without making changes (shows what would be grouped)
         #[arg(long = "preview")]
         preview: bool,
@@ -792,6 +798,7 @@ fn run_group(
     separator: char,
     min_count: usize,
     strip_prefix: bool,
+    from_suffix: bool,
     preview: bool,
     no_interactive: bool,
     scope: Option<PathBuf>,
@@ -802,7 +809,10 @@ fn run_group(
         "Recursive: {}, Dry run: {}, Separator: '{}', Min count: {}",
         recursive, dry_run, separator, min_count
     );
-    if strip_prefix {
+    if from_suffix {
+        info!("From suffix: enabled (splitting at last separator)");
+    }
+    if strip_prefix || from_suffix {
         info!("Strip prefix: enabled");
     }
 
@@ -811,7 +821,9 @@ fn run_group(
     options.dry_run = dry_run;
     options.separator = separator;
     options.min_count = min_count;
-    options.strip_prefix = strip_prefix;
+    // from_suffix implies strip_prefix
+    options.strip_prefix = strip_prefix || from_suffix;
+    options.from_suffix = from_suffix;
 
     let grouper = FileGrouper::new(options);
 
@@ -1192,6 +1204,7 @@ fn main() -> anyhow::Result<()> {
                 separator,
                 min_count,
                 strip_prefix,
+                from_suffix,
                 preview,
                 no_interactive,
                 scope,
@@ -1205,6 +1218,7 @@ fn main() -> anyhow::Result<()> {
                     separator,
                     min_count,
                     strip_prefix,
+                    from_suffix,
                     preview,
                     no_interactive,
                     scope,
