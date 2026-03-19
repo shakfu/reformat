@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Plugin system for reformat transformers"
+readme = "../README.md"
 
 [dependencies]
 anyhow.workspace = true

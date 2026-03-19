@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Core library for text and file reformatting"
+readme = "../README.md"
 
 [dependencies]
 regex.workspace = true

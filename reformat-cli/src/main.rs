@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 #[derive(Parser)]
 #[command(
     name = "reformat",
-    version = "0.2.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Code transformation tool for case conversion and cleaning",
     long_about = "A modular code transformation framework.\n\n\
                   Usage:\n\
