@@ -1,25 +1,26 @@
 use clap::{Parser, Subcommand};
-use refmt_core::{
-    CaseConverter, CaseFormat, CaseTransform, CombinedOptions, CombinedProcessor, EmojiOptions,
-    EmojiTransformer, FileGrouper, FileRenamer, GroupOptions, ReferenceFixer, ReferenceScanner,
-    RenameOptions, ScanOptions, SpaceReplace, TimestampFormat, WhitespaceCleaner, WhitespaceOptions,
-};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info};
 use logging_timer::time;
+use reformat_core::{
+    CaseConverter, CaseFormat, CaseTransform, CombinedOptions, CombinedProcessor, EmojiOptions,
+    EmojiTransformer, FileGrouper, FileRenamer, GroupOptions, ReferenceFixer, ReferenceScanner,
+    RenameOptions, ScanOptions, SpaceReplace, TimestampFormat, WhitespaceCleaner,
+    WhitespaceOptions,
+};
 use simplelog::*;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
-    name = "refmt",
+    name = "reformat",
     version = "0.2.0",
     about = "Code transformation tool for case conversion and cleaning",
     long_about = "A modular code transformation framework.\n\n\
                   Usage:\n\
-                  - refmt <path>: Run all transformations (rename to lowercase, emojis, clean)\n\
-                  - refmt -r <path>: Run all transformations recursively\n\n\
+                  - reformat <path>: Run all transformations (rename to lowercase, emojis, clean)\n\
+                  - reformat -r <path>: Run all transformations recursively\n\n\
                   Commands:\n\
                   - convert: Convert between case formats\n\
                   - clean: Remove trailing whitespace\n\
@@ -405,6 +406,7 @@ fn determine_case_format(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[time("info")]
 fn run_convert(
     from_camel: bool,
@@ -452,10 +454,7 @@ fn run_convert(
         to_screaming_kebab,
     );
 
-    info!(
-        "Converting from {:?} to {:?}",
-        from_format, to_format
-    );
+    info!("Converting from {:?} to {:?}", from_format, to_format);
     info!("Target path: {}", path.display());
     info!("Recursive: {}, Dry run: {}", recursive, dry_run);
 
@@ -525,10 +524,11 @@ fn run_clean(
         debug!("File extensions: {:?}", exts);
     }
 
-    let mut options = WhitespaceOptions::default();
-    options.recursive = recursive;
-    options.dry_run = dry_run;
-
+    let mut options = WhitespaceOptions {
+        recursive,
+        dry_run,
+        ..Default::default()
+    };
     if let Some(exts) = extensions {
         options.file_extensions = exts;
     }
@@ -542,14 +542,8 @@ fn run_clean(
 
     if files > 0 {
         let prefix = if dry_run { "[DRY-RUN] " } else { "" };
-        info!(
-            "{}Cleaned {} lines in {} file(s)",
-            prefix, lines, files
-        );
-        println!(
-            "{}Cleaned {} lines in {} file(s)",
-            prefix, lines, files
-        );
+        info!("{}Cleaned {} lines in {} file(s)", prefix, lines, files);
+        println!("{}Cleaned {} lines in {} file(s)", prefix, lines, files);
     } else {
         info!("No files needed cleaning");
         println!("No files needed cleaning");
@@ -578,12 +572,13 @@ fn run_emojis(
         debug!("File extensions: {:?}", exts);
     }
 
-    let mut options = EmojiOptions::default();
-    options.recursive = recursive;
-    options.dry_run = dry_run;
-    options.replace_task_emojis = replace_task;
-    options.remove_other_emojis = remove_other;
-
+    let mut options = EmojiOptions {
+        recursive,
+        dry_run,
+        replace_task_emojis: replace_task,
+        remove_other_emojis: remove_other,
+        ..Default::default()
+    };
     if let Some(exts) = extensions {
         options.file_extensions = exts;
     }
@@ -613,6 +608,7 @@ fn run_emojis(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[time("info")]
 fn run_rename(
     path: PathBuf,
@@ -634,12 +630,17 @@ fn run_rename(
     timestamp_short: bool,
 ) -> anyhow::Result<()> {
     info!("Renaming files in: {}", path.display());
-    info!("Recursive: {}, Dry run: {}, Include symlinks: {}", recursive, dry_run, include_symlinks);
+    info!(
+        "Recursive: {}, Dry run: {}, Include symlinks: {}",
+        recursive, dry_run, include_symlinks
+    );
 
-    let mut options = RenameOptions::default();
-    options.recursive = recursive;
-    options.dry_run = dry_run;
-    options.include_symlinks = include_symlinks;
+    let mut options = RenameOptions {
+        recursive,
+        dry_run,
+        include_symlinks,
+        ..Default::default()
+    };
 
     // Set case transform (only one should be selected)
     if to_lowercase {
@@ -731,12 +732,12 @@ fn run_rename(
 fn prompt_yes_no(question: &str) -> bool {
     print!("{} [y/N]: ", question);
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_err() {
         return false;
     }
-    
+
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
@@ -744,8 +745,12 @@ fn prompt_yes_no(question: &str) -> bool {
 /// Returns a warning message if there's an overlap, None otherwise
 fn check_scope_overlap(scope_path: &Path, target_path: &Path) -> Option<String> {
     // Canonicalize both paths for accurate comparison
-    let scope_canonical = scope_path.canonicalize().unwrap_or_else(|_| scope_path.to_path_buf());
-    let target_canonical = target_path.canonicalize().unwrap_or_else(|_| target_path.to_path_buf());
+    let scope_canonical = scope_path
+        .canonicalize()
+        .unwrap_or_else(|_| scope_path.to_path_buf());
+    let target_canonical = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.to_path_buf());
 
     // Check if scope contains target (scope is parent of target)
     if target_canonical.starts_with(&scope_canonical) {
@@ -774,15 +779,18 @@ fn check_scope_overlap(scope_path: &Path, target_path: &Path) -> Option<String> 
 }
 
 /// Prompts the user for directories to scan
-fn prompt_scan_dirs(default_dir: &PathBuf) -> Vec<PathBuf> {
-    print!("Enter directories to scan (comma-separated, or press Enter for '{}'): ", default_dir.display());
+fn prompt_scan_dirs(default_dir: &Path) -> Vec<PathBuf> {
+    print!(
+        "Enter directories to scan (comma-separated, or press Enter for '{}'): ",
+        default_dir.display()
+    );
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     if io::stdin().read_line(&mut input).is_err() || input.trim().is_empty() {
-        return vec![default_dir.clone()];
+        return vec![default_dir.to_path_buf()];
     }
-    
+
     input
         .trim()
         .split(',')
@@ -790,6 +798,7 @@ fn prompt_scan_dirs(default_dir: &PathBuf) -> Vec<PathBuf> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 #[time("info")]
 fn run_group(
     path: PathBuf,
@@ -816,14 +825,15 @@ fn run_group(
         info!("Strip prefix: enabled");
     }
 
-    let mut options = GroupOptions::default();
-    options.recursive = recursive;
-    options.dry_run = dry_run;
-    options.separator = separator;
-    options.min_count = min_count;
-    // from_suffix implies strip_prefix
-    options.strip_prefix = strip_prefix || from_suffix;
-    options.from_suffix = from_suffix;
+    let options = GroupOptions {
+        recursive,
+        dry_run,
+        separator,
+        min_count,
+        // from_suffix implies strip_prefix
+        strip_prefix: strip_prefix || from_suffix,
+        from_suffix,
+    };
 
     let grouper = FileGrouper::new(options);
 
@@ -833,7 +843,10 @@ fn run_group(
         spinner.finish_and_clear();
 
         if groups.is_empty() {
-            println!("No file groups found matching criteria (min_count: {})", min_count);
+            println!(
+                "No file groups found matching criteria (min_count: {})",
+                min_count
+            );
         } else {
             println!("Found {} potential group(s):", groups.len());
             for (prefix, files) in &groups {
@@ -858,16 +871,16 @@ fn run_group(
             "{}Grouping complete: {} directories created, {} files moved",
             prefix_str, stats.dirs_created, stats.files_moved
         );
-        println!(
-            "{}Grouping complete:",
-            prefix_str
-        );
+        println!("{}Grouping complete:", prefix_str);
         if stats.dirs_created > 0 {
             println!("  - Directories created: {}", stats.dirs_created);
         }
         println!("  - Files moved: {}", stats.files_moved);
         if stats.files_renamed > 0 {
-            println!("  - Files renamed (prefix stripped): {}", stats.files_renamed);
+            println!(
+                "  - Files renamed (prefix stripped): {}",
+                stats.files_renamed
+            );
         }
 
         // Write changes.json (even in dry-run mode, for reference)
@@ -894,8 +907,10 @@ fn run_group(
                     }
 
                     // Scan for broken references
-                    let mut scan_options = ScanOptions::default();
-                    scan_options.verbose = verbose_scan;
+                    let scan_options = ScanOptions {
+                        verbose: verbose_scan,
+                        ..Default::default()
+                    };
 
                     let spinner = if verbose_scan {
                         eprintln!("Scanning for broken references...");
@@ -903,7 +918,8 @@ fn run_group(
                     } else {
                         Some(create_spinner("Scanning for broken references..."))
                     };
-                    let scanner = ReferenceScanner::from_change_record(&result.changes, scan_options);
+                    let scanner =
+                        ReferenceScanner::from_change_record(&result.changes, scan_options);
                     let fix_record = scanner.scan(&dirs_to_scan)?;
                     if let Some(s) = spinner {
                         s.finish_and_clear();
@@ -963,8 +979,10 @@ fn run_group(
                     }
                 }
 
-                let mut scan_options = ScanOptions::default();
-                scan_options.verbose = verbose_scan;
+                let scan_options = ScanOptions {
+                    verbose: verbose_scan,
+                    ..Default::default()
+                };
 
                 let spinner = if verbose_scan {
                     eprintln!("Scanning for broken references...");
@@ -1001,9 +1019,7 @@ fn run_combined(path: PathBuf, recursive: bool, dry_run: bool) -> anyhow::Result
     info!("Running combined transformations on: {}", path.display());
     info!("Recursive: {}, Dry run: {}", recursive, dry_run);
 
-    let mut options = CombinedOptions::default();
-    options.recursive = recursive;
-    options.dry_run = dry_run;
+    let options = CombinedOptions { recursive, dry_run };
 
     let spinner = create_spinner("Processing files (rename, emojis, clean)...");
 
@@ -1024,10 +1040,7 @@ fn run_combined(path: PathBuf, recursive: bool, dry_run: bool) -> anyhow::Result
             prefix, stats.files_renamed, stats.files_emoji_transformed, stats.emoji_changes,
             stats.files_whitespace_cleaned, stats.whitespace_lines_cleaned
         );
-        println!(
-            "{}Processed files:",
-            prefix
-        );
+        println!("{}Processed files:", prefix);
         if stats.files_renamed > 0 {
             println!("  - Renamed: {} file(s)", stats.files_renamed);
         }
@@ -1153,7 +1166,14 @@ fn main() -> anyhow::Result<()> {
                 remove_other,
             } => {
                 debug!("Running emojis subcommand");
-                run_emojis(path, recursive, dry_run, extensions, replace_task, remove_other)
+                run_emojis(
+                    path,
+                    recursive,
+                    dry_run,
+                    extensions,
+                    replace_task,
+                    remove_other,
+                )
             }
 
             Commands::RenameFiles {
@@ -1225,7 +1245,7 @@ fn main() -> anyhow::Result<()> {
                     verbose_scan,
                 )
             }
-        }
+        },
     };
 
     if let Err(ref e) = result {

@@ -177,7 +177,8 @@ impl ReferenceScanner {
     pub fn new(file_moves: HashMap<String, String>, options: ScanOptions) -> Self {
         // Build the Aho-Corasick automaton for O(n) multi-pattern matching
         let patterns: Vec<String> = file_moves.keys().cloned().collect();
-        let automaton = AhoCorasick::new(&patterns).expect("Failed to build Aho-Corasick automaton");
+        let automaton =
+            AhoCorasick::new(&patterns).expect("Failed to build Aho-Corasick automaton");
 
         ReferenceScanner {
             options,
@@ -210,7 +211,11 @@ impl ReferenceScanner {
         // Skip excluded patterns
         if exclude_patterns.iter().any(|p| p == name) {
             if verbose && entry.file_type().is_dir() {
-                eprintln!("  [skip] {} (excluded pattern: {})", entry.path().display(), name);
+                eprintln!(
+                    "  [skip] {} (excluded pattern: {})",
+                    entry.path().display(),
+                    name
+                );
             }
             return false;
         }
@@ -223,7 +228,7 @@ impl ReferenceScanner {
         if self.options.extensions.is_empty() {
             return true;
         }
-        
+
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             let ext_with_dot = format!(".{}", ext);
             self.options.extensions.iter().any(|e| e == &ext_with_dot)
@@ -358,18 +363,21 @@ impl ReferenceScanner {
         }
 
         if verbose {
-            eprintln!("[scan] Complete. Scanned {} files, found {} references.",
-                     files_scanned, fix_record.fixes.len());
+            eprintln!(
+                "[scan] Complete. Scanned {} files, found {} references.",
+                files_scanned,
+                fix_record.fixes.len()
+            );
         }
-        
+
         // Deduplicate fixes (same file/line might have multiple matches)
-        fix_record.fixes.sort_by(|a, b| {
-            (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column))
-        });
+        fix_record
+            .fixes
+            .sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
         fix_record.fixes.dedup_by(|a, b| {
             a.file == b.file && a.line == b.line && a.old_reference == b.old_reference
         });
-        
+
         Ok(fix_record)
     }
 }
@@ -381,13 +389,13 @@ impl ReferenceFixer {
     /// Applies all fixes from a fix record
     pub fn apply_fixes(fix_record: &FixRecord) -> crate::Result<ApplyResult> {
         let mut result = ApplyResult::default();
-        
+
         // Group fixes by file
         let mut fixes_by_file: HashMap<&str, Vec<&ReferenceFix>> = HashMap::new();
         for fix in &fix_record.fixes {
             fixes_by_file.entry(&fix.file).or_default().push(fix);
         }
-        
+
         for (file_path, fixes) in fixes_by_file {
             match Self::apply_fixes_to_file(Path::new(file_path), &fixes) {
                 Ok(count) => {
@@ -399,7 +407,7 @@ impl ReferenceFixer {
                 }
             }
         }
-        
+
         Ok(result)
     }
 
@@ -408,25 +416,25 @@ impl ReferenceFixer {
         let content = fs::read_to_string(path)?;
         let mut new_content = content.clone();
         let mut fixed_count = 0;
-        
+
         // Apply fixes (we need to be careful about overlapping replacements)
         for fix in fixes {
             let old = &fix.old_reference;
             let new = &fix.new_reference;
-            
+
             if new_content.contains(old) {
                 new_content = new_content.replace(old, new);
                 fixed_count += 1;
             }
         }
-        
+
         if new_content != content {
             fs::write(path, new_content)?;
         }
-        
+
         Ok(fixed_count)
     }
-    
+
     /// Performs a dry run, returning what would be changed
     pub fn dry_run(fix_record: &FixRecord) -> Vec<String> {
         fix_record
@@ -463,7 +471,7 @@ mod tests {
     fn create_test_dir(name: &str) -> PathBuf {
         let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let test_dir = std::env::temp_dir().join(format!(
-            "refmt_refs_{}_{}_{}",
+            "reformat_refs_{}_{}_{}",
             name,
             std::process::id(),
             counter
@@ -506,63 +514,78 @@ mod tests {
     #[test]
     fn test_scan_file() {
         let test_dir = create_test_dir("scan");
-        
+
         // Create a file with references
         let test_file = test_dir.join("handler.go");
-        fs::write(&test_file, r#"
+        fs::write(
+            &test_file,
+            r#"
 package main
 
 func render() {
     t := template.ParseFiles("wbs_create.tmpl")
     t2 := template.ParseFiles("wbs_delete.tmpl")
 }
-"#).unwrap();
-        
+"#,
+        )
+        .unwrap();
+
         let mut moves = HashMap::new();
         moves.insert("wbs_create.tmpl".to_string(), "wbs/create.tmpl".to_string());
         moves.insert("wbs_delete.tmpl".to_string(), "wbs/delete.tmpl".to_string());
-        
+
         let scanner = ReferenceScanner::new(moves, ScanOptions::default());
         let fixes = scanner.scan_file(&test_file).unwrap();
-        
+
         assert_eq!(fixes.len(), 2);
         assert_eq!(fixes[0].old_reference, "wbs_create.tmpl");
         assert_eq!(fixes[0].new_reference, "wbs/create.tmpl");
-        
+
         let _ = fs::remove_dir_all(&test_dir);
     }
 
     #[test]
     fn test_scan_directories() {
         let test_dir = create_test_dir("scandir");
-        
+
         // Create files with references
-        fs::write(test_dir.join("main.go"), r#"
+        fs::write(
+            test_dir.join("main.go"),
+            r#"
 include "old_file.tmpl"
-"#).unwrap();
-        
-        fs::write(test_dir.join("config.yaml"), r#"
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            test_dir.join("config.yaml"),
+            r#"
 template: old_file.tmpl
-"#).unwrap();
-        
+"#,
+        )
+        .unwrap();
+
         let mut moves = HashMap::new();
-        moves.insert("old_file.tmpl".to_string(), "templates/file.tmpl".to_string());
-        
+        moves.insert(
+            "old_file.tmpl".to_string(),
+            "templates/file.tmpl".to_string(),
+        );
+
         let scanner = ReferenceScanner::new(moves, ScanOptions::default());
         let fix_record = scanner.scan(&[test_dir.clone()]).unwrap();
-        
+
         assert_eq!(fix_record.len(), 2);
-        
+
         let _ = fs::remove_dir_all(&test_dir);
     }
 
     #[test]
     fn test_apply_fixes() {
         let test_dir = create_test_dir("apply");
-        
+
         let test_file = test_dir.join("test.go");
         fs::write(&test_file, r#"include "old.tmpl""#).unwrap();
-        
+
         let fix_record = FixRecord {
             generated_from: "test".to_string(),
             timestamp: "2026-01-15T00:00:00Z".to_string(),
@@ -576,15 +599,15 @@ template: old_file.tmpl
                 new_reference: "new/old.tmpl".to_string(),
             }],
         };
-        
+
         let result = ReferenceFixer::apply_fixes(&fix_record).unwrap();
         assert_eq!(result.files_modified, 1);
         assert_eq!(result.references_fixed, 1);
-        
+
         let content = fs::read_to_string(&test_file).unwrap();
         assert!(content.contains("new/old.tmpl"));
         assert!(!content.contains(r#""old.tmpl""#));
-        
+
         let _ = fs::remove_dir_all(&test_dir);
     }
 
@@ -603,11 +626,11 @@ template: old_file.tmpl
                 new_reference: "new/old.tmpl".to_string(),
             }],
         };
-        
+
         let json = serde_json::to_string_pretty(&fix_record).unwrap();
         assert!(json.contains("\"generated_from\": \"changes.json\""));
         assert!(json.contains("\"old_reference\": \"old.tmpl\""));
-        
+
         let parsed: FixRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.fixes.len(), 1);
     }

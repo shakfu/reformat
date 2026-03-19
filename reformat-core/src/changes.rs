@@ -132,7 +132,6 @@ impl ChangeRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_change_record_creation() {
@@ -146,7 +145,7 @@ mod tests {
         let mut record = ChangeRecord::new("group", Path::new("/tmp/test"));
         record.add_directory_created("wbs");
         record.add_file_moved("wbs_create.tmpl", "wbs/create.tmpl");
-        
+
         assert_eq!(record.len(), 2);
         assert!(!record.is_empty());
     }
@@ -157,7 +156,7 @@ mod tests {
         record.add_directory_created("wbs");
         record.add_file_moved("wbs_create.tmpl", "wbs/create.tmpl");
         record.add_file_moved("wbs_delete.tmpl", "wbs/delete.tmpl");
-        
+
         let moves = record.file_moves();
         assert_eq!(moves.len(), 2);
         assert_eq!(moves[0], ("wbs_create.tmpl", "wbs/create.tmpl"));
@@ -168,7 +167,7 @@ mod tests {
         let mut record = ChangeRecord::new("group", Path::new("/tmp/test"));
         record.add_directory_created("wbs");
         record.add_file_moved("wbs_create.tmpl", "wbs/create.tmpl");
-        
+
         let json = serde_json::to_string_pretty(&record).unwrap();
         assert!(json.contains("\"operation\": \"group\""));
         assert!(json.contains("\"type\": \"directory_created\""));
@@ -177,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read() {
-        let test_dir = std::env::temp_dir().join("refmt_changes_test");
+        let test_dir = std::env::temp_dir().join("reformat_changes_test");
         let _ = fs::create_dir_all(&test_dir);
         let file_path = test_dir.join("changes.json");
 

@@ -1,4 +1,4 @@
-//! Plugin system for refmt transformers
+//! Plugin system for reformat transformers
 //!
 //! This crate provides the foundation for loading and managing
 //! custom transformation plugins.

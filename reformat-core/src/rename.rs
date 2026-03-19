@@ -162,9 +162,7 @@ impl FileRenamer {
                 let metadata = fs::metadata(path).ok()?;
 
                 // Try to get creation time, fall back to modified time
-                let created = metadata.created()
-                    .or_else(|_| metadata.modified())
-                    .ok()?;
+                let created = metadata.created().or_else(|_| metadata.modified()).ok()?;
 
                 // Convert to duration since epoch
                 let duration = created.duration_since(SystemTime::UNIX_EPOCH).ok()?;
@@ -206,12 +204,17 @@ impl FileRenamer {
 
                 // Format based on timestamp format with detected separator
                 match self.options.timestamp_format {
-                    TimestampFormat::Long => {
-                        Some(format!("{:04}{:02}{:02}{}", year, month, day_of_month, separator))
-                    }
-                    TimestampFormat::Short => {
-                        Some(format!("{:02}{:02}{:02}{}", year % 100, month, day_of_month, separator))
-                    }
+                    TimestampFormat::Long => Some(format!(
+                        "{:04}{:02}{:02}{}",
+                        year, month, day_of_month, separator
+                    )),
+                    TimestampFormat::Short => Some(format!(
+                        "{:02}{:02}{:02}{}",
+                        year % 100,
+                        month,
+                        day_of_month,
+                        separator
+                    )),
                     TimestampFormat::None => None,
                 }
             }
@@ -220,11 +223,16 @@ impl FileRenamer {
 
     /// Checks if a year is a leap year
     fn is_leap_year(year: u64) -> bool {
-        (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
     }
 
     /// Applies all transformations to a filename
-    fn transform_name(&self, name: &str, extension: Option<&str>, timestamp: Option<String>) -> String {
+    fn transform_name(
+        &self,
+        name: &str,
+        extension: Option<&str>,
+        timestamp: Option<String>,
+    ) -> String {
         let mut result = name.to_string();
 
         // 1. Remove prefix
@@ -251,7 +259,11 @@ impl FileRenamer {
         // 4. Replace suffix
         if let Some((old_suffix, new_suffix)) = &self.options.replace_suffix {
             if result.ends_with(old_suffix) {
-                result = format!("{}{}", &result[..result.len() - old_suffix.len()], new_suffix);
+                result = format!(
+                    "{}{}",
+                    &result[..result.len() - old_suffix.len()],
+                    new_suffix
+                );
             }
         }
 
@@ -259,11 +271,11 @@ impl FileRenamer {
         match self.options.space_replace {
             SpaceReplace::Underscore => {
                 // Replace all separators (spaces, hyphens) with underscores
-                result = result.replace(' ', "_").replace('-', "_");
+                result = result.replace([' ', '-'], "_");
             }
             SpaceReplace::Hyphen => {
                 // Replace all separators (spaces, underscores) with hyphens
-                result = result.replace(' ', "-").replace('_', "-");
+                result = result.replace([' ', '_'], "-");
             }
             SpaceReplace::None => {}
         }
@@ -280,7 +292,8 @@ impl FileRenamer {
                 if !result.is_empty() {
                     let mut chars = result.chars();
                     if let Some(first) = chars.next() {
-                        result = first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase();
+                        result = first.to_uppercase().collect::<String>()
+                            + &chars.as_str().to_lowercase();
                     }
                 }
             }
@@ -384,7 +397,8 @@ impl FileRenamer {
         let mut renamed_count = 0;
 
         // Check if path itself is a symlink
-        let path_is_symlink = path.symlink_metadata()
+        let path_is_symlink = path
+            .symlink_metadata()
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false);
 
@@ -455,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_lowercase_transform() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_lowercase");
+        let test_dir = std::env::temp_dir().join("reformat_rename_lowercase");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("TestFile.txt");
@@ -477,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_uppercase_transform() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_uppercase");
+        let test_dir = std::env::temp_dir().join("reformat_rename_uppercase");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("testfile.txt");
@@ -499,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_capitalize_transform() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_capitalize");
+        let test_dir = std::env::temp_dir().join("reformat_rename_capitalize");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("testFile.txt");
@@ -521,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_separators_to_underscore() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_underscore");
+        let test_dir = std::env::temp_dir().join("reformat_rename_underscore");
         fs::create_dir_all(&test_dir).unwrap();
 
         // Test space to underscore
@@ -552,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_separators_to_hyphen() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_hyphen");
+        let test_dir = std::env::temp_dir().join("reformat_rename_hyphen");
         fs::create_dir_all(&test_dir).unwrap();
 
         // Test space to hyphen
@@ -583,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_add_prefix() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_add_prefix");
+        let test_dir = std::env::temp_dir().join("reformat_rename_add_prefix");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("file.txt");
@@ -604,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_remove_prefix() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_rm_prefix");
+        let test_dir = std::env::temp_dir().join("reformat_rename_rm_prefix");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("old_file.txt");
@@ -625,7 +639,7 @@ mod tests {
 
     #[test]
     fn test_add_suffix() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_add_suffix");
+        let test_dir = std::env::temp_dir().join("reformat_rename_add_suffix");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("file.txt");
@@ -646,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_remove_suffix() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_rm_suffix");
+        let test_dir = std::env::temp_dir().join("reformat_rename_rm_suffix");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("file_old.txt");
@@ -667,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_combined_transforms() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_combined");
+        let test_dir = std::env::temp_dir().join("reformat_rename_combined");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("old_Test File.txt");
@@ -691,7 +705,7 @@ mod tests {
 
     #[test]
     fn test_dry_run_mode() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_dry");
+        let test_dir = std::env::temp_dir().join("reformat_rename_dry");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("TestFile.txt");
@@ -715,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_skip_hidden_files() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_hidden");
+        let test_dir = std::env::temp_dir().join("reformat_rename_hidden");
         fs::create_dir_all(&test_dir).unwrap();
 
         let hidden_file = test_dir.join(".hidden.txt");
@@ -736,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_recursive_processing() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_recursive");
+        let test_dir = std::env::temp_dir().join("reformat_rename_recursive");
         fs::create_dir_all(&test_dir).unwrap();
 
         let sub_dir = test_dir.join("subdir");
@@ -764,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_no_extension_file() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_no_ext");
+        let test_dir = std::env::temp_dir().join("reformat_rename_no_ext");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("TestFile");
@@ -786,7 +800,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_long_format() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_long");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_long");
         let _ = fs::remove_dir_all(&test_dir); // Clean up first
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -810,17 +824,30 @@ mod tests {
         let file_name = renamed_file.file_name().unwrap().to_str().unwrap();
 
         // Verify format: should start with 8 digits followed by hyphen (default separator)
-        assert!(file_name.len() >= 9, "Filename should have at least 9 characters (YYYYMMDD-)");
-        assert!(file_name.starts_with(|c: char| c.is_ascii_digit()), "Should start with digit");
-        assert_eq!(&file_name[8..9], "-", "Should have hyphen after date (default separator)");
-        assert!(file_name.ends_with("document.txt"), "Should end with original name");
+        assert!(
+            file_name.len() >= 9,
+            "Filename should have at least 9 characters (YYYYMMDD-)"
+        );
+        assert!(
+            file_name.starts_with(|c: char| c.is_ascii_digit()),
+            "Should start with digit"
+        );
+        assert_eq!(
+            &file_name[8..9],
+            "-",
+            "Should have hyphen after date (default separator)"
+        );
+        assert!(
+            file_name.ends_with("document.txt"),
+            "Should end with original name"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
 
     #[test]
     fn test_timestamp_short_format() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_short");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_short");
         let _ = fs::remove_dir_all(&test_dir); // Clean up first
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -844,17 +871,30 @@ mod tests {
         let file_name = renamed_file.file_name().unwrap().to_str().unwrap();
 
         // Verify format: should start with 6 digits followed by hyphen (default separator)
-        assert!(file_name.len() >= 7, "Filename should have at least 7 characters (YYMMDD-)");
-        assert!(file_name.starts_with(|c: char| c.is_ascii_digit()), "Should start with digit");
-        assert_eq!(&file_name[6..7], "-", "Should have hyphen after date (default separator)");
-        assert!(file_name.ends_with("notes.md"), "Should end with original name");
+        assert!(
+            file_name.len() >= 7,
+            "Filename should have at least 7 characters (YYMMDD-)"
+        );
+        assert!(
+            file_name.starts_with(|c: char| c.is_ascii_digit()),
+            "Should start with digit"
+        );
+        assert_eq!(
+            &file_name[6..7],
+            "-",
+            "Should have hyphen after date (default separator)"
+        );
+        assert!(
+            file_name.ends_with("notes.md"),
+            "Should end with original name"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
 
     #[test]
     fn test_timestamp_with_other_transforms() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_combined");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_combined");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("My Document.txt");
@@ -888,7 +928,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_separator_detection_hyphen() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_hyphen");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_hyphen");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("my-document-file.txt");
@@ -910,7 +950,11 @@ mod tests {
 
         // Should use hyphen as separator: YYYYMMDD-my-document-file.txt
         assert!(file_name.starts_with(|c: char| c.is_ascii_digit()));
-        assert_eq!(&file_name[8..9], "-", "Timestamp should use hyphen separator");
+        assert_eq!(
+            &file_name[8..9],
+            "-",
+            "Timestamp should use hyphen separator"
+        );
         assert!(file_name.ends_with("my-document-file.txt"));
 
         fs::remove_dir_all(&test_dir).unwrap();
@@ -918,7 +962,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_separator_detection_underscore() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_underscore");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_underscore");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("my_document_file.txt");
@@ -940,7 +984,11 @@ mod tests {
 
         // Should use underscore as separator: YYMMDD_my_document_file.txt
         assert!(file_name.starts_with(|c: char| c.is_ascii_digit()));
-        assert_eq!(&file_name[6..7], "_", "Timestamp should use underscore separator");
+        assert_eq!(
+            &file_name[6..7],
+            "_",
+            "Timestamp should use underscore separator"
+        );
         assert!(file_name.ends_with("my_document_file.txt"));
 
         fs::remove_dir_all(&test_dir).unwrap();
@@ -948,7 +996,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_separator_detection_mixed() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_mixed");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_mixed");
         let _ = fs::remove_dir_all(&test_dir); // Clean up first
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -971,14 +1019,18 @@ mod tests {
         let file_name = renamed_file.file_name().unwrap().to_str().unwrap();
 
         // Should use hyphen (more hyphens than underscores)
-        assert_eq!(&file_name[8..9], "-", "Should use hyphen for mixed with more hyphens");
+        assert_eq!(
+            &file_name[8..9],
+            "-",
+            "Should use hyphen for mixed with more hyphens"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
 
     #[test]
     fn test_timestamp_separator_detection_no_separator() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_nosep");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_nosep");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("mydocument.txt");
@@ -1007,7 +1059,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_separator_detection_spaces() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_timestamp_spaces");
+        let test_dir = std::env::temp_dir().join("reformat_rename_timestamp_spaces");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("my document file.txt");
@@ -1028,7 +1080,11 @@ mod tests {
         let file_name = renamed_file.file_name().unwrap().to_str().unwrap();
 
         // Should use hyphen for space-separated files
-        assert_eq!(&file_name[8..9], "-", "Should use hyphen for space-separated files");
+        assert_eq!(
+            &file_name[8..9],
+            "-",
+            "Should use hyphen for space-separated files"
+        );
         assert!(file_name.ends_with("my document file.txt"));
 
         fs::remove_dir_all(&test_dir).unwrap();
@@ -1036,7 +1092,7 @@ mod tests {
 
     #[test]
     fn test_replace_prefix() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_replace_prefix");
+        let test_dir = std::env::temp_dir().join("reformat_rename_replace_prefix");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("old_file.txt");
@@ -1057,7 +1113,7 @@ mod tests {
 
     #[test]
     fn test_replace_prefix_no_match() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_replace_prefix_nomatch");
+        let test_dir = std::env::temp_dir().join("reformat_rename_replace_prefix_nomatch");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("other_file.txt");
@@ -1078,7 +1134,7 @@ mod tests {
 
     #[test]
     fn test_replace_suffix() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_replace_suffix");
+        let test_dir = std::env::temp_dir().join("reformat_rename_replace_suffix");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("file_old.txt");
@@ -1099,7 +1155,7 @@ mod tests {
 
     #[test]
     fn test_replace_suffix_no_match() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_replace_suffix_nomatch");
+        let test_dir = std::env::temp_dir().join("reformat_rename_replace_suffix_nomatch");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("file_other.txt");
@@ -1120,7 +1176,7 @@ mod tests {
 
     #[test]
     fn test_replace_prefix_and_suffix_combined() {
-        let test_dir = std::env::temp_dir().join("refmt_rename_replace_both");
+        let test_dir = std::env::temp_dir().join("reformat_rename_replace_both");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("old_file_v1.txt");
@@ -1145,7 +1201,7 @@ mod tests {
     fn test_symlinks_skipped_by_default() {
         use std::os::unix::fs::symlink;
 
-        let test_dir = std::env::temp_dir().join("refmt_rename_symlink_skip");
+        let test_dir = std::env::temp_dir().join("reformat_rename_symlink_skip");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -1174,7 +1230,10 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        assert!(entries.iter().any(|n| n == "SymLink.txt"), "Symlink should retain original uppercase name");
+        assert!(
+            entries.iter().any(|n| n == "SymLink.txt"),
+            "Symlink should retain original uppercase name"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
@@ -1184,7 +1243,7 @@ mod tests {
     fn test_symlinks_included_when_enabled() {
         use std::os::unix::fs::symlink;
 
-        let test_dir = std::env::temp_dir().join("refmt_rename_symlink_include");
+        let test_dir = std::env::temp_dir().join("reformat_rename_symlink_include");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -1213,8 +1272,14 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        assert!(entries.iter().any(|n| n == "symlink.txt"), "Symlink should be renamed to lowercase");
-        assert!(!entries.iter().any(|n| n == "SymLink.txt"), "Original uppercase symlink name should be gone");
+        assert!(
+            entries.iter().any(|n| n == "symlink.txt"),
+            "Symlink should be renamed to lowercase"
+        );
+        assert!(
+            !entries.iter().any(|n| n == "SymLink.txt"),
+            "Original uppercase symlink name should be gone"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
@@ -1224,7 +1289,7 @@ mod tests {
     fn test_symlink_with_uppercase_target() {
         use std::os::unix::fs::symlink;
 
-        let test_dir = std::env::temp_dir().join("refmt_rename_symlink_both");
+        let test_dir = std::env::temp_dir().join("reformat_rename_symlink_both");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -1252,8 +1317,14 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        assert!(entries.iter().any(|n| n == "target.txt"), "Target file should be renamed to lowercase");
-        assert!(entries.iter().any(|n| n == "symlink.txt"), "Symlink should be renamed to lowercase");
+        assert!(
+            entries.iter().any(|n| n == "target.txt"),
+            "Target file should be renamed to lowercase"
+        );
+        assert!(
+            entries.iter().any(|n| n == "symlink.txt"),
+            "Symlink should be renamed to lowercase"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }

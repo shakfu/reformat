@@ -1,12 +1,12 @@
-//! Integration tests for using refmt as a library
+//! Integration tests for using reformat as a library
 
-use refmt_core::{CaseConverter, CaseFormat};
+use reformat_core::{CaseConverter, CaseFormat};
 use std::fs;
 
 #[test]
 fn test_library_basic_conversion() {
     // Create a temporary test file
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_basic");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_basic");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -29,7 +29,8 @@ fn test_library_basic_conversion() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -46,7 +47,7 @@ fn test_library_basic_conversion() {
 
 #[test]
 fn test_library_with_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_prefix");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_prefix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.js");
@@ -68,7 +69,8 @@ fn test_library_with_prefix() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -80,7 +82,7 @@ fn test_library_with_prefix() {
 
 #[test]
 fn test_library_with_suffix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_suffix");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_suffix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.ts");
@@ -102,7 +104,8 @@ fn test_library_with_suffix() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -114,7 +117,7 @@ fn test_library_with_suffix() {
 
 #[test]
 fn test_library_dry_run() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_dry");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_dry");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -126,7 +129,7 @@ fn test_library_dry_run() {
         CaseFormat::SnakeCase,
         Some(vec![".py".to_string()]),
         false,
-        true,  // dry_run = true
+        true, // dry_run = true
         String::new(),
         String::new(),
         None,
@@ -137,7 +140,8 @@ fn test_library_dry_run() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -150,7 +154,7 @@ fn test_library_dry_run() {
 
 #[test]
 fn test_library_recursive() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_recursive");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_recursive");
     fs::create_dir_all(&test_dir).unwrap();
 
     // Create nested structure
@@ -167,7 +171,7 @@ fn test_library_recursive() {
         CaseFormat::CamelCase,
         CaseFormat::SnakeCase,
         Some(vec![".py".to_string()]),
-        true,  // recursive = true
+        true, // recursive = true
         false,
         String::new(),
         String::new(),
@@ -179,7 +183,8 @@ fn test_library_recursive() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -195,11 +200,15 @@ fn test_library_recursive() {
 
 #[test]
 fn test_library_word_filter() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_filter");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_filter");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
-    fs::write(&test_file, "getUserName = lambda: 'alice'\nmyVariable = 123").unwrap();
+    fs::write(
+        &test_file,
+        "getUserName = lambda: 'alice'\nmyVariable = 123",
+    )
+    .unwrap();
 
     let converter = CaseConverter::new(
         CaseFormat::CamelCase,
@@ -216,8 +225,9 @@ fn test_library_word_filter() {
         None,
         None,
         None,
-        Some("^get.*".to_string()),  // Only convert identifiers starting with "get"
-    ).unwrap();
+        Some("^get.*".to_string()), // Only convert identifiers starting with "get"
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -237,16 +247,46 @@ fn test_library_word_filter() {
 fn test_library_all_case_formats() {
     // Test conversion between all major formats
     let test_cases = vec![
-        (CaseFormat::CamelCase, CaseFormat::SnakeCase, "firstName", "first_name"),
-        (CaseFormat::SnakeCase, CaseFormat::CamelCase, "first_name", "firstName"),
-        (CaseFormat::PascalCase, CaseFormat::KebabCase, "FirstName", "first-name"),
-        (CaseFormat::KebabCase, CaseFormat::PascalCase, "first-name", "FirstName"),
-        (CaseFormat::SnakeCase, CaseFormat::ScreamingSnakeCase, "first_name", "FIRST_NAME"),
-        (CaseFormat::KebabCase, CaseFormat::ScreamingKebabCase, "first-name", "FIRST-NAME"),
+        (
+            CaseFormat::CamelCase,
+            CaseFormat::SnakeCase,
+            "firstName",
+            "first_name",
+        ),
+        (
+            CaseFormat::SnakeCase,
+            CaseFormat::CamelCase,
+            "first_name",
+            "firstName",
+        ),
+        (
+            CaseFormat::PascalCase,
+            CaseFormat::KebabCase,
+            "FirstName",
+            "first-name",
+        ),
+        (
+            CaseFormat::KebabCase,
+            CaseFormat::PascalCase,
+            "first-name",
+            "FirstName",
+        ),
+        (
+            CaseFormat::SnakeCase,
+            CaseFormat::ScreamingSnakeCase,
+            "first_name",
+            "FIRST_NAME",
+        ),
+        (
+            CaseFormat::KebabCase,
+            CaseFormat::ScreamingKebabCase,
+            "first-name",
+            "FIRST-NAME",
+        ),
     ];
 
     for (idx, (from, to, input, expected)) in test_cases.iter().enumerate() {
-        let test_dir = std::env::temp_dir().join(format!("refmt_test_lib_formats_{}", idx));
+        let test_dir = std::env::temp_dir().join(format!("reformat_test_lib_formats_{}", idx));
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.txt");
@@ -268,12 +308,17 @@ fn test_library_all_case_formats() {
             None,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         converter.process_directory(&test_dir).unwrap();
 
         let content = fs::read_to_string(&test_file).unwrap();
-        assert_eq!(content, *expected, "Failed conversion from {:?} to {:?}", from, to);
+        assert_eq!(
+            content, *expected,
+            "Failed conversion from {:?} to {:?}",
+            from, to
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }
@@ -281,7 +326,7 @@ fn test_library_all_case_formats() {
 
 #[test]
 fn test_library_strip_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_strip_prefix");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_strip_prefix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.cpp");
@@ -296,7 +341,7 @@ fn test_library_strip_prefix() {
         false,
         String::new(),
         String::new(),
-        Some("My".to_string()),  // Strip "My" prefix
+        Some("My".to_string()), // Strip "My" prefix
         None,
         None,
         None,
@@ -304,7 +349,8 @@ fn test_library_strip_prefix() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -319,7 +365,7 @@ fn test_library_strip_prefix() {
 
 #[test]
 fn test_library_strip_suffix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_strip_suffix");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_strip_suffix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -334,14 +380,15 @@ fn test_library_strip_suffix() {
         String::new(),
         String::new(),
         None,
-        Some("_tmp".to_string()),  // Strip "_tmp" suffix
+        Some("_tmp".to_string()), // Strip "_tmp" suffix
         None,
         None,
         None,
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -357,12 +404,16 @@ fn test_library_strip_suffix() {
 
 #[test]
 fn test_library_replace_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_replace_prefix");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_replace_prefix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.java");
     // Use PascalCase identifiers starting with "Old" (matches PascalCase pattern)
-    fs::write(&test_file, "OldUserService service;\nOldDataProvider provider;").unwrap();
+    fs::write(
+        &test_file,
+        "OldUserService service;\nOldDataProvider provider;",
+    )
+    .unwrap();
 
     let converter = CaseConverter::new(
         CaseFormat::PascalCase,
@@ -374,13 +425,14 @@ fn test_library_replace_prefix() {
         String::new(),
         None,
         None,
-        Some("Old".to_string()),  // Replace "Old" prefix
-        Some("New".to_string()),  // with "New"
+        Some("Old".to_string()), // Replace "Old" prefix
+        Some("New".to_string()), // with "New"
         None,
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 
@@ -395,7 +447,7 @@ fn test_library_replace_prefix() {
 
 #[test]
 fn test_library_strip_and_add_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_lib_strip_and_add");
+    let test_dir = std::env::temp_dir().join("reformat_test_lib_strip_and_add");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.c");
@@ -408,9 +460,9 @@ fn test_library_strip_and_add_prefix() {
         Some(vec![".c".to_string()]),
         false,
         false,
-        "new_".to_string(),  // Add "new_" prefix after conversion
+        "new_".to_string(), // Add "new_" prefix after conversion
         String::new(),
-        Some("Old".to_string()),  // Strip "Old" prefix before conversion
+        Some("Old".to_string()), // Strip "Old" prefix before conversion
         None,
         None,
         None,
@@ -418,7 +470,8 @@ fn test_library_strip_and_add_prefix() {
         None,
         None,
         None,
-    ).unwrap();
+    )
+    .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
 

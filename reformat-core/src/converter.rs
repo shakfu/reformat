@@ -28,6 +28,7 @@ pub struct CaseConverter {
 
 impl CaseConverter {
     /// Creates a new case converter
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         from_format: CaseFormat,
         to_format: CaseFormat,
@@ -46,7 +47,7 @@ impl CaseConverter {
         word_filter: Option<String>,
     ) -> crate::Result<Self> {
         let file_extensions = file_extensions.unwrap_or_else(|| {
-            vec![
+            [
                 ".c", ".h", ".py", ".md", ".js", ".ts", ".java", ".cpp", ".hpp",
             ]
             .iter()
@@ -98,21 +99,30 @@ impl CaseConverter {
         // Step 2: Strip suffix if specified
         if let Some(ref strip_sfx) = self.strip_suffix {
             if processed_name.ends_with(strip_sfx) {
-                processed_name = processed_name[..processed_name.len() - strip_sfx.len()].to_string();
+                processed_name =
+                    processed_name[..processed_name.len() - strip_sfx.len()].to_string();
             }
         }
 
         // Step 3: Replace prefix if specified
-        if let (Some(ref from_pfx), Some(ref to_pfx)) = (&self.replace_prefix_from, &self.replace_prefix_to) {
+        if let (Some(ref from_pfx), Some(ref to_pfx)) =
+            (&self.replace_prefix_from, &self.replace_prefix_to)
+        {
             if processed_name.starts_with(from_pfx) {
                 processed_name = format!("{}{}", to_pfx, &processed_name[from_pfx.len()..]);
             }
         }
 
         // Step 4: Replace suffix if specified
-        if let (Some(ref from_sfx), Some(ref to_sfx)) = (&self.replace_suffix_from, &self.replace_suffix_to) {
+        if let (Some(ref from_sfx), Some(ref to_sfx)) =
+            (&self.replace_suffix_from, &self.replace_suffix_to)
+        {
             if processed_name.ends_with(from_sfx) {
-                processed_name = format!("{}{}", &processed_name[..processed_name.len() - from_sfx.len()], to_sfx);
+                processed_name = format!(
+                    "{}{}",
+                    &processed_name[..processed_name.len() - from_sfx.len()],
+                    to_sfx
+                );
             }
         }
 
@@ -127,7 +137,8 @@ impl CaseConverter {
         let words = self.from_format.split_words(&processed_name);
 
         // Step 7: Add prefix/suffix (existing functionality)
-        self.to_format.join_words(&words, &self.prefix, &self.suffix)
+        self.to_format
+            .join_words(&words, &self.prefix, &self.suffix)
     }
 
     /// Checks if a file matches the glob pattern
@@ -178,9 +189,9 @@ impl CaseConverter {
         let content = fs::read_to_string(filepath)?;
 
         // Replace all matches of the source pattern
-        let modified_content = self.source_pattern.replace_all(&content, |caps: &regex::Captures| {
-            self.convert(&caps[0])
-        });
+        let modified_content = self
+            .source_pattern
+            .replace_all(&content, |caps: &regex::Captures| self.convert(&caps[0]));
 
         if content != modified_content {
             if self.dry_run {
@@ -215,12 +226,18 @@ impl CaseConverter {
 
         // Otherwise, process directory
         if !directory_path.is_dir() {
-            eprintln!("Path '{}' is not a directory or file.", directory_path.display());
+            eprintln!(
+                "Path '{}' is not a directory or file.",
+                directory_path.display()
+            );
             return Ok(());
         }
 
         if self.recursive {
-            for entry in WalkDir::new(directory_path).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(directory_path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 if entry.file_type().is_file() {
                     if let Err(e) = self.process_file(entry.path(), directory_path) {
                         eprintln!("Error processing file '{}': {}", entry.path().display(), e);

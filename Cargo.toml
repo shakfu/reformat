@@ -1,17 +1,20 @@
 [workspace]
 members = [
-    "refmt-core",
-    "refmt-cli",
-    "refmt-plugins",
+    "reformat-core",
+    "reformat-cli",
+    "reformat-plugins",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.1.4"
 edition = "2021"
-authors = ["refmt Contributors"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/refmt"
+authors = ["Shakeeb Alireza"]
+license = "MIT"
+homepage = "https://github.com/shakfu/reformat"
+repository = "https://github.com/shakfu/reformat"
+keywords = ["code", "transform", "rename", "format", "cleanup"]
+categories = ["command-line-utilities", "development-tools", "text-processing"]
 
 [workspace.dependencies]
 # Shared dependencies across workspace
@@ -19,7 +22,6 @@ regex = "1.11"
 aho-corasick = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 anyhow = "1.0"
 thiserror = "1.0"
 walkdir = "2.5"

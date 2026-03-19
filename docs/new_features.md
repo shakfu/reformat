@@ -1,6 +1,6 @@
 # New Features and Transformation Ideas
 
-This document outlines potential features and transformations that could be incorporated into refmt. These suggestions range from simple enhancements to complex code restructuring capabilities.
+This document outlines potential features and transformations that could be incorporated into reformat. These suggestions range from simple enhancements to complex code restructuring capabilities.
 
 ## Priority Classification
 
@@ -720,7 +720,7 @@ def test_process_user_activate():
 ### Feature Toggle
 
 ```yaml
-# refmt-config.yaml
+# reformat-config.yaml
 transformers:
   case_conversion:
     enabled: true
@@ -761,9 +761,9 @@ custom_rules:
 
 ## Contributing New Features
 
-When adding new transformations to refmt:
+When adding new transformations to reformat:
 
-1. **Create module** in `refmt-core/src/transformers/<feature>.rs`
+1. **Create module** in `reformat-core/src/transformers/<feature>.rs`
 2. **Implement Transformer trait** with clear transformation logic
 3. **Add comprehensive tests** in module and integration tests
 4. **Document behavior** in module docs and examples
@@ -807,6 +807,6 @@ Links to similar transformations
 ## Feedback and Suggestions
 
 Have ideas for new transformations? Open an issue at:
-https://github.com/yourusername/refmt/issues
+https://github.com/yourusername/reformat/issues
 
 Label: `enhancement`, `transformation-idea`

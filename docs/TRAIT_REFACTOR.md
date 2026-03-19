@@ -4,11 +4,11 @@
 
 **Effort Level: Medium (28-44 hours of focused work, 2-4 weeks calendar time)**
 
-This document analyzes the effort required to refactor refmt from its current struct-based architecture to a trait-based architecture with polymorphic transformers, filters, analyzers, and a pipeline builder pattern.
+This document analyzes the effort required to refactor reformat from its current struct-based architecture to a trait-based architecture with polymorphic transformers, filters, analyzers, and a pipeline builder pattern.
 
 **Current State:**
-- ~2,500 LOC in refmt-core
-- ~850 LOC in refmt-cli
+- ~2,500 LOC in reformat-core
+- ~850 LOC in reformat-cli
 - 4 concrete transformers: CaseConverter, WhitespaceCleaner, EmojiTransformer, FileRenamer
 - 89 passing tests
 - Struct-based design with similar patterns across transformers
@@ -39,7 +39,7 @@ This document analyzes the effort required to refactor refmt from its current st
 **New Code (~150-200 LOC):**
 
 ```rust
-// NEW: refmt-core/src/traits/transformer.rs
+// NEW: reformat-core/src/traits/transformer.rs
 pub trait Transformer: Send + Sync {
     /// Returns the name of this transformer
     fn name(&self) -> &str;
@@ -125,7 +125,7 @@ impl Transformer for WhitespaceCleaner {
 **New Code (~400 LOC):**
 
 ```rust
-// NEW: refmt-core/src/traits/filter.rs (~100-150 LOC)
+// NEW: reformat-core/src/traits/filter.rs (~100-150 LOC)
 pub trait Filter: Send + Sync {
     /// Returns the name of this filter
     fn name(&self) -> &str;
@@ -134,7 +134,7 @@ pub trait Filter: Send + Sync {
     fn matches(&self, entry: &FileEntry) -> bool;
 }
 
-// NEW: refmt-core/src/context.rs (~100 LOC)
+// NEW: reformat-core/src/context.rs (~100 LOC)
 pub struct FileEntry {
     pub path: PathBuf,
     pub metadata: std::fs::Metadata,
@@ -146,7 +146,7 @@ impl FileEntry {
     pub fn relative_path(&self, base: &Path) -> PathBuf { /* ... */ }
 }
 
-// NEW: refmt-core/src/filters/mod.rs (~300-400 LOC)
+// NEW: reformat-core/src/filters/mod.rs (~300-400 LOC)
 pub struct ExtensionFilter {
     extensions: Vec<String>,
 }
@@ -213,7 +213,7 @@ pub struct BuildDirectoryFilter {
 **New Code (~300 LOC):**
 
 ```rust
-// NEW: refmt-core/src/traits/analyzer.rs (~100 LOC)
+// NEW: reformat-core/src/traits/analyzer.rs (~100 LOC)
 pub trait Analyzer: Send + Sync {
     /// Returns the name of this analyzer
     fn name(&self) -> &str;
@@ -234,7 +234,7 @@ pub struct AnalysisReport {
     pub details: HashMap<String, Value>,
 }
 
-// NEW: refmt-core/src/analyzers/ (~200-300 LOC)
+// NEW: reformat-core/src/analyzers/ (~200-300 LOC)
 pub struct FileCountAnalyzer;
 
 impl Analyzer for FileCountAnalyzer {
@@ -295,7 +295,7 @@ pub struct TransformationStatsAnalyzer;
 **New Code (~500 LOC):**
 
 ```rust
-// NEW: refmt-core/src/pipeline.rs (~300-400 LOC)
+// NEW: reformat-core/src/pipeline.rs (~300-400 LOC)
 pub struct Pipeline {
     stages: Vec<Stage>,
     context: TransformContext,
@@ -386,7 +386,7 @@ impl PipelineBuilder {
     }
 }
 
-// NEW: refmt-core/src/context.rs (~150-200 LOC)
+// NEW: reformat-core/src/context.rs (~150-200 LOC)
 pub struct TransformContext {
     files: FileSet,
     metadata: HashMap<String, Value>,
@@ -567,7 +567,7 @@ pub trait Transformer {
 
 **Mitigation:**
 - Use `anyhow::Result` for flexibility
-- Or define `refmt::Error` enum
+- Or define `reformat::Error` enum
 - Provide context with each error
 
 ### 3. Lifetimes
@@ -705,7 +705,7 @@ pub struct Pipeline<'a> {
 - You want a plugin system
 - You need extensibility for users
 - You plan advanced features (YAML config, AST matching, etc.)
-- You want to position refmt as a framework
+- You want to position reformat as a framework
 - You value clean architecture
 
 ❌ **NO, if:**
@@ -737,7 +737,7 @@ Most existing code can be preserved. The refactoring is:
 ### Before (Current API)
 
 ```rust
-use refmt_core::{WhitespaceCleaner, WhitespaceOptions};
+use reformat_core::{WhitespaceCleaner, WhitespaceOptions};
 
 let mut options = WhitespaceOptions::default();
 options.recursive = true;
@@ -750,7 +750,7 @@ let (files, lines) = cleaner.process(Path::new("src"))?;
 ### After (Trait-Based API)
 
 ```rust
-use refmt_core::{Pipeline, WhitespaceCleaner, WhitespaceOptions};
+use reformat_core::{Pipeline, WhitespaceCleaner, WhitespaceOptions};
 
 // Option 1: Keep using concrete types (backward compatible)
 let mut options = WhitespaceOptions::default();
@@ -773,7 +773,7 @@ println!("Cleaned {} files", report.files_processed);
 ### Advanced (New Capabilities)
 
 ```rust
-use refmt_core::{
+use reformat_core::{
     Pipeline,
     ExtensionFilter, HiddenFileFilter,
     WhitespaceCleaner, EmojiTransformer, FileRenamer,

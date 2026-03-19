@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1] - 2026-01-26
+## [0.1.4]
 
 ### Added
 
@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Usage**:
   ```bash
-  refmt group --from-suffix templates/
+  reformat group --from-suffix templates/
   ```
 
 - `--from-suffix` implicitly enables prefix stripping (no need to also specify `--strip-prefix`)
@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added 4 new unit tests for suffix-based splitting
 - All 135 tests passing
 
-## [0.4.0] - 2026-01-15
+## [0.1.3]
 
 ### Added
 
@@ -94,7 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Example workflow**:
   ```bash
-  $ refmt group --strip-prefix templates/
+  $ reformat group --strip-prefix templates/
   Created directory: templates/wbs
   Moved and renamed 'wbs_create.tmpl' -> 'wbs/create.tmpl'
   
@@ -112,23 +112,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Non-interactive mode**:
   ```bash
-  refmt group --strip-prefix --no-interactive --scope src templates/
+  reformat group --strip-prefix --no-interactive --scope src templates/
   ```
 
 #### New Core Modules
-- **FileGrouper** (`refmt-core/src/group.rs`)
+- **FileGrouper** (`reformat-core/src/group.rs`)
   - `GroupOptions` struct for configuration
   - `GroupStats` and `GroupResult` for operation statistics and change tracking
   - `preview()` method for dry analysis
   - `process_with_changes()` for full change tracking
   - Full support for dry-run and recursive modes
 
-- **ChangeRecord** (`refmt-core/src/changes.rs`)
+- **ChangeRecord** (`reformat-core/src/changes.rs`)
   - Tracks all changes from refactoring operations
   - Serializable to JSON for persistence
   - Records: directories created, files moved, files renamed
 
-- **ReferenceScanner** (`refmt-core/src/refs.rs`)
+- **ReferenceScanner** (`reformat-core/src/refs.rs`)
   - Scans files for references to moved/renamed files
   - Configurable file extensions and exclusion patterns
   - `FixRecord` for proposed fixes
@@ -141,14 +141,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests cover: basic grouping, prefix stripping, dry-run mode, recursive processing, custom separators, minimum count thresholds, reference detection, fix application
 - All 94 tests passing
 
-## [0.3.0] - 2025-10-19
+## [0.1.2]
 
 ### Added
 
 #### Default Command (Combined Processing)
 - **New default command** for efficient single-pass processing
-  - `refmt <path>`: Process files without specifying a subcommand
-  - `refmt -r <path>`: Process recursively
+  - `reformat <path>`: Process files without specifying a subcommand
+  - `reformat -r <path>`: Process recursively
   - Combines three transformations in order:
     1. Rename files to lowercase
     2. Transform task emojis to text alternatives
@@ -157,7 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Single directory traversal instead of three separate scans
 
 #### New Core Module
-- **CombinedProcessor** (`refmt-core/src/combined.rs`)
+- **CombinedProcessor** (`reformat-core/src/combined.rs`)
   - Efficient single-pass file processing
   - Tracks and reports detailed statistics for all transformations
   - Returns `CombinedStats` with counts for files renamed, emojis transformed, and whitespace cleaned
@@ -180,21 +180,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added usage examples and performance notes
 - Documented the transformation pipeline and benefits
 
-## [0.2.0] - 2025-10-10
+## [0.1.1]
 
 ### Overview
 This release represents a major architectural overhaul and feature expansion. The project has been restructured as a Cargo workspace with a library-first design, enabling both CLI and programmatic usage. Three new subcommands have been added (`convert`, `clean`, `emojis`), along with comprehensive logging and UI enhancements.
 
 ### Changed
 - **BREAKING**: Restructured project as Cargo workspace
-  - **refmt-core**: Core library for transformations
-  - **refmt-cli**: Command-line binary
-  - **refmt-plugins**: Plugin system foundation
+  - **reformat-core**: Core library for transformations
+  - **reformat-cli**: Command-line binary
+  - **reformat-plugins**: Plugin system foundation
 - Library-first architecture enables programmatic usage
 - CLI now supports modern subcommand architecture with three commands:
-  - `refmt convert`: Case format conversion
-  - `refmt clean`: Whitespace cleaning
-  - `refmt emojis`: Emoji transformation
+  - `reformat convert`: Case format conversion
+  - `reformat clean`: Whitespace cleaning
+  - `reformat emojis`: Emoji transformation
 - Enhanced CLI with comprehensive logging and UI features
 - Maintained full backwards compatibility for legacy CLI interface (direct flags still work)
 
@@ -208,7 +208,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 - Recursive processing (default: enabled, `-r` flag)
 - Extension filtering with sensible defaults for common code files
 - Automatically skips hidden files and build directories (`.git`, `node_modules`, `target`, etc.)
-- Example: `refmt clean src/`
+- Example: `reformat clean src/`
 
 **Emoji Transformation** (`emojis` subcommand)
 - Replaces task completion emojis with text alternatives for better compatibility
@@ -231,7 +231,7 @@ This release represents a major architectural overhaul and feature expansion. Th
   - `--replace-task`: Replace task emojis with text (default: true)
   - `--remove-other`: Remove non-task emojis (default: true)
 - Support for markdown, text, and source code files
-- Example: `refmt emojis README.md`
+- Example: `reformat emojis README.md`
 
 #### Logging & UI Enhancements
 
@@ -255,7 +255,7 @@ This release represents a major architectural overhaul and feature expansion. Th
   - `WhitespaceCleaner` and `WhitespaceOptions` for whitespace cleaning
   - `EmojiTransformer` and `EmojiOptions` for emoji transformation
 - Modular workspace structure for easier feature additions
-- Plugin system foundation in `refmt-plugins`
+- Plugin system foundation in `reformat-plugins`
 - Comprehensive inline documentation and module docs
 - Example library usage in integration tests
 
@@ -288,13 +288,13 @@ This release represents a major architectural overhaul and feature expansion. Th
 **Architecture**:
 - Split monolithic `src/main.rs` (437 lines) into organized modules across 3 crates
 - **Core modules**:
-  - `refmt-core/src/case.rs` - Case format definitions and conversion logic
-  - `refmt-core/src/converter.rs` - File processing and pattern matching
-  - `refmt-core/src/whitespace.rs` - Trailing whitespace removal
-  - `refmt-core/src/emoji.rs` - Emoji detection and replacement
-  - `refmt-core/src/lib.rs` - Public API exports
+  - `reformat-core/src/case.rs` - Case format definitions and conversion logic
+  - `reformat-core/src/converter.rs` - File processing and pattern matching
+  - `reformat-core/src/whitespace.rs` - Trailing whitespace removal
+  - `reformat-core/src/emoji.rs` - Emoji detection and replacement
+  - `reformat-core/src/lib.rs` - Public API exports
 - **CLI module**:
-  - `refmt-cli/src/main.rs` - Clap-based CLI with subcommands and logging
+  - `reformat-cli/src/main.rs` - Clap-based CLI with subcommands and logging
 
 **Implementation Highlights**:
 - Whitespace cleaner preserves file line endings (CRLF/LF)
@@ -316,10 +316,10 @@ This release represents a major architectural overhaul and feature expansion. Th
 - Efficient regex-based pattern matching
 - Minimal memory overhead with streaming file processing
 
-## [0.1.0] - 2025-10-10
+## [0.1.0]
 
 ### Added
-- Initial Rust implementation of refmt CLI tool with Python-compatible API
+- Initial Rust implementation of reformat CLI tool with Python-compatible API
 - Support for 6 case format conversions:
   - camelCase
   - PascalCase

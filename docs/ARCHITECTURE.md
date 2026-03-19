@@ -1,12 +1,12 @@
-# refmt Architecture Documentation
+# reformat Architecture Documentation
 
 ## Overview
 
-refmt is a modular code transformation framework implemented in Rust. It provides a library-first design with a command-line interface for applying transformations to source code files. The framework supports case format conversion, whitespace cleaning, emoji transformation, and file renaming operations.
+reformat is a modular code transformation framework implemented in Rust. It provides a library-first design with a command-line interface for applying transformations to source code files. The framework supports case format conversion, whitespace cleaning, emoji transformation, and file renaming operations.
 
 ## Design Principles
 
-1. **Library-First**: Core functionality in `refmt-core`, CLI as thin wrapper in `refmt-cli`
+1. **Library-First**: Core functionality in `reformat-core`, CLI as thin wrapper in `reformat-cli`
 2. **Modularity**: Each transformation is independent and self-contained
 3. **Composability**: Combined processor enables efficient single-pass operations
 4. **Type Safety**: Strong typing with enums and structs ensures compile-time guarantees
@@ -20,9 +20,9 @@ refmt is a modular code transformation framework implemented in Rust. It provide
 The project is organized as a Cargo workspace:
 
 ```
-refmt/
+reformat/
 ├── Cargo.toml                 # Workspace definition
-├── refmt-core/                # Core library
+├── reformat-core/                # Core library
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs             # Public API exports
@@ -33,12 +33,12 @@ refmt/
 │       ├── rename.rs          # FileRenamer implementation
 │       └── combined.rs        # CombinedProcessor for single-pass operations
 │
-├── refmt-cli/                 # CLI binary
+├── reformat-cli/                 # CLI binary
 │   ├── Cargo.toml
 │   └── src/
 │       └── main.rs            # Clap-based CLI with subcommands
 │
-├── refmt-plugins/             # Plugin system (foundation only)
+├── reformat-plugins/             # Plugin system (foundation only)
 │   ├── Cargo.toml
 │   └── src/
 │       └── lib.rs             # Plugin API placeholder
@@ -53,9 +53,9 @@ refmt/
 ```toml
 [workspace]
 members = [
-    "refmt-core",
-    "refmt-cli",
-    "refmt-plugins",
+    "reformat-core",
+    "reformat-cli",
+    "reformat-plugins",
 ]
 
 [workspace.package]
@@ -72,7 +72,7 @@ simplelog = "0.12"
 indicatif = "0.17"
 ```
 
-### Core Library (refmt-core)
+### Core Library (reformat-core)
 
 The core library provides the fundamental transformation capabilities:
 
@@ -309,7 +309,7 @@ pub struct CombinedStats {
 
 ## CLI Architecture
 
-### CLI Binary (refmt-cli)
+### CLI Binary (reformat-cli)
 
 Built with `clap` derive macros using subcommand architecture.
 
@@ -337,9 +337,9 @@ Built with `clap` derive macros using subcommand architecture.
 Runs all transformations in a single pass (no subcommand required).
 
 ```bash
-refmt <path>         # Process path
-refmt -r <path>      # Process recursively
-refmt -d <path>      # Dry run
+reformat <path>         # Process path
+reformat -r <path>      # Process recursively
+reformat -d <path>      # Dry run
 ```
 
 **Pipeline:**
@@ -352,7 +352,7 @@ refmt -d <path>      # Dry run
 **1. `convert` - Case format conversion**
 
 ```bash
-refmt convert --from-camel --to-snake src/
+reformat convert --from-camel --to-snake src/
 ```
 
 Options:
@@ -370,7 +370,7 @@ Options:
 **2. `clean` - Whitespace cleaning**
 
 ```bash
-refmt clean src/
+reformat clean src/
 ```
 
 Options:
@@ -381,7 +381,7 @@ Options:
 **3. `emojis` - Emoji transformation**
 
 ```bash
-refmt emojis docs/
+reformat emojis docs/
 ```
 
 Options:
@@ -394,7 +394,7 @@ Options:
 **4. `rename_files` - File renaming**
 
 ```bash
-refmt rename_files --to-lowercase src/
+reformat rename_files --to-lowercase src/
 ```
 
 Options:
@@ -409,7 +409,7 @@ Options:
 
 ### Public API
 
-All transformers are exported from `refmt-core`:
+All transformers are exported from `reformat-core`:
 
 ```rust
 pub use case::CaseFormat;
@@ -424,7 +424,7 @@ pub use combined::{CombinedProcessor, CombinedOptions, CombinedStats};
 
 **Case Conversion:**
 ```rust
-use refmt_core::{CaseConverter, CaseFormat};
+use reformat_core::{CaseConverter, CaseFormat};
 
 let converter = CaseConverter::new(
     CaseFormat::CamelCase,
@@ -440,7 +440,7 @@ converter.process_directory(Path::new("src"))?;
 
 **Whitespace Cleaning:**
 ```rust
-use refmt_core::{WhitespaceCleaner, WhitespaceOptions};
+use reformat_core::{WhitespaceCleaner, WhitespaceOptions};
 
 let mut options = WhitespaceOptions::default();
 options.recursive = true;
@@ -451,7 +451,7 @@ let (files, lines) = cleaner.process(Path::new("src"))?;
 
 **Combined Processing:**
 ```rust
-use refmt_core::{CombinedProcessor, CombinedOptions};
+use reformat_core::{CombinedProcessor, CombinedOptions};
 
 let processor = CombinedProcessor::with_defaults();
 let stats = processor.process(Path::new("src"))?;
@@ -470,7 +470,7 @@ println!("Whitespace: {} files, {} lines",
 ### Test Organization
 
 ```
-refmt-core/
+reformat-core/
 ├── src/
 │   ├── case.rs          # 5 unit tests
 │   ├── converter.rs     # 7 unit tests
@@ -481,7 +481,7 @@ refmt-core/
 └── tests/
     └── library_integration.rs  # 11 integration tests
 
-refmt-cli/
+reformat-cli/
 └── tests/
     └── cli_integration.rs      # 34 CLI tests
 ```
@@ -600,16 +600,16 @@ run_convert(), Elapsed=4.089125ms
 
 ### Adding New Transformers
 
-1. Create new module in `refmt-core/src/`
+1. Create new module in `reformat-core/src/`
 2. Define struct with options
 3. Implement transformation logic
 4. Add tests
 5. Export from `lib.rs`
-6. Add CLI command in `refmt-cli/src/main.rs`
+6. Add CLI command in `reformat-cli/src/main.rs`
 
 **Example Structure:**
 ```rust
-// refmt-core/src/my_transformer.rs
+// reformat-core/src/my_transformer.rs
 pub struct MyTransformer {
     options: MyOptions,
 }
@@ -694,16 +694,16 @@ The current simple struct-based design can evolve to trait-based architecture wi
 cargo build --workspace
 
 # Build specific crates
-cargo build -p refmt-core     # Library only
-cargo build -p refmt          # CLI binary
+cargo build -p reformat-core     # Library only
+cargo build -p reformat          # CLI binary
 
 # Release build
-cargo build --release -p refmt
+cargo build --release -p reformat
 
 # Run tests
 cargo test --workspace        # All tests
-cargo test -p refmt-core      # Core tests only
-cargo test -p refmt           # CLI tests only
+cargo test -p reformat-core      # Core tests only
+cargo test -p reformat           # CLI tests only
 ```
 
 ### Release Profile
@@ -719,10 +719,10 @@ codegen-units = 1
 
 ```bash
 # Install from workspace
-cargo install --path refmt-cli
+cargo install --path reformat-cli
 
 # Binary location
-./target/release/refmt
+./target/release/reformat
 ```
 
 ## Documentation

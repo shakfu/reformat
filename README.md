@@ -1,22 +1,22 @@
-# refmt
+# reformat
 
 A modular code transformation framework for applying code transformations to code in a set of source code files.
 
 Organized as a Cargo workspace:
-- **refmt-core**: Core transformation library
-- **refmt-cli**: Command-line interface
-- **refmt-plugins**: Plugin system (foundation)
+- **reformat-core**: Core transformation library
+- **reformat-cli**: Command-line interface
+- **reformat-plugins**: Plugin system (foundation)
 
 ## Features
 
 ### Default Command (Quick Processing)
-- **NEW**: Run all common transformations in a single pass with `refmt <path>`
+- Run all common transformations in a single pass with `reformat <path>`
 - Combines three operations efficiently:
   1. Rename files to lowercase
   2. Transform task emojis to text alternatives
   3. Remove trailing whitespace
 - **3x faster** than running individual commands separately
-- Perfect for quick project cleanup: `refmt -r src/`
+- Perfect for quick project cleanup: `reformat -r src/`
 
 ### Case Format Conversion
 - Convert between 6 case formats: camelCase, PascalCase, snake_case, SCREAMING_SNAKE_CASE, kebab-case, and SCREAMING-KEBAB-CASE
@@ -68,16 +68,16 @@ Organized as a Cargo workspace:
 Install from the workspace:
 
 ```bash
-cargo install --path refmt-cli
+cargo install --path reformat-cli
 ```
 
 Or build from source:
 
 ```bash
-cargo build --release -p refmt
+cargo build --release -p reformat
 ```
 
-The binary will be at `./target/release/refmt`
+The binary will be at `./target/release/reformat`
 
 ## Library Usage
 
@@ -85,20 +85,30 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-refmt-core = { path = "../refmt-core" }
+reformat-core = "0.1.4"
 ```
 
 ### Case Conversion
 
 ```rust
-use refmt_core::{CaseConverter, CaseFormat};
+use reformat_core::{CaseConverter, CaseFormat};
 
 let converter = CaseConverter::new(
-    CaseFormat::CamelCase,
-    CaseFormat::SnakeCase,
-    None, false, false,
-    String::new(), String::new(),
-    None, None
+    CaseFormat::CamelCase,    // from
+    CaseFormat::SnakeCase,    // to
+    None,                     // file_extensions
+    false,                    // recursive
+    false,                    // dry_run
+    String::new(),            // prefix
+    String::new(),            // suffix
+    None,                     // strip_prefix
+    None,                     // strip_suffix
+    None,                     // replace_prefix_from
+    None,                     // replace_prefix_to
+    None,                     // replace_suffix_from
+    None,                     // replace_suffix_to
+    None,                     // glob_pattern
+    None,                     // word_filter
 )?;
 
 converter.process_directory(std::path::Path::new("src"))?;
@@ -107,7 +117,7 @@ converter.process_directory(std::path::Path::new("src"))?;
 ### Whitespace Cleaning
 
 ```rust
-use refmt_core::{WhitespaceCleaner, WhitespaceOptions};
+use reformat_core::{WhitespaceCleaner, WhitespaceOptions};
 
 let mut options = WhitespaceOptions::default();
 options.dry_run = false;
@@ -121,7 +131,7 @@ println!("Cleaned {} lines in {} files", lines_cleaned, files_cleaned);
 ### Combined Processing (Default Command)
 
 ```rust
-use refmt_core::{CombinedProcessor, CombinedOptions};
+use reformat_core::{CombinedProcessor, CombinedOptions};
 
 let mut options = CombinedOptions::default();
 options.recursive = true;
@@ -140,7 +150,7 @@ println!("Whitespace cleaned: {} files ({} lines)",
 ### File Grouping
 
 ```rust
-use refmt_core::{FileGrouper, GroupOptions};
+use reformat_core::{FileGrouper, GroupOptions};
 
 let mut options = GroupOptions::default();
 options.strip_prefix = true;  // Remove prefix from filenames
@@ -164,13 +174,13 @@ The fastest way to clean up your code:
 
 ```bash
 # Process directory (non-recursive)
-refmt <path>
+reformat <path>
 
 # Process recursively
-refmt -r <path>
+reformat -r <path>
 
 # Preview changes without modifying files
-refmt -d <path>
+reformat -d <path>
 ```
 
 **What it does:**
@@ -181,13 +191,13 @@ refmt -d <path>
 **Example:**
 ```bash
 # Clean up an entire project directory
-refmt -r src/
+reformat -r src/
 
 # Preview changes first
-refmt -d -r docs/
+reformat -d -r docs/
 
 # Process a single file
-refmt README.md
+reformat README.md
 ```
 
 **Output:**
@@ -207,81 +217,76 @@ Processed files:
 
 Basic conversion (using subcommand):
 ```bash
-refmt convert --from-camel --to-snake myfile.py
-```
-
-Or legacy mode (backwards compatible):
-```bash
-refmt --from-camel --to-snake myfile.py
+reformat convert --from-camel --to-snake myfile.py
 ```
 
 Recursive directory conversion:
 ```bash
-refmt convert --from-snake --to-camel -r src/
+reformat convert --from-snake --to-camel -r src/
 ```
 
 Dry run (preview changes):
 ```bash
-refmt convert --from-camel --to-kebab --dry-run mydir/
+reformat convert --from-camel --to-kebab --dry-run mydir/
 ```
 
 Add prefix to all converted identifiers:
 ```bash
-refmt convert --from-camel --to-snake --prefix "old_" myfile.py
+reformat convert --from-camel --to-snake --prefix "old_" myfile.py
 ```
 
 Filter files by pattern:
 ```bash
-refmt convert --from-camel --to-snake -r --glob "*test*.py" src/
+reformat convert --from-camel --to-snake -r --glob "*test*.py" src/
 ```
 
 Only convert specific identifiers:
 ```bash
-refmt convert --from-camel --to-snake --word-filter "^get.*" src/
+reformat convert --from-camel --to-snake --word-filter "^get.*" src/
 ```
 
 ### Whitespace Cleaning
 
 Clean all default file types in current directory:
 ```bash
-refmt clean .
+reformat clean .
 ```
 
 Clean with dry-run to preview changes:
 ```bash
-refmt clean --dry-run src/
+reformat clean --dry-run src/
 ```
 
 Clean only specific file types:
 ```bash
-refmt clean -e .py -e .rs src/
+reformat clean -e .py -e .rs src/
 ```
 
 Clean a single file:
 ```bash
-refmt clean myfile.py
+reformat clean myfile.py
 ```
 
 ### Emoji Transformation
 
 Replace task emojis with text in markdown files:
 ```bash
-refmt emojis docs/
+reformat emojis docs/
 ```
 
 Process with dry-run to preview changes:
 ```bash
-refmt emojis --dry-run README.md
+reformat emojis --dry-run README.md
 ```
 
 Only replace task emojis, keep other emojis:
 ```bash
-refmt emojis --replace-task --no-remove-other docs/
+reformat emojis --replace-task --no-remove-other docs/
 ```
 
 Process specific file types:
 ```bash
-refmt emojis -e .md -e .txt project/
+reformat emojis -e .md -e .txt project/
 ```
 
 ### File Grouping
@@ -289,28 +294,28 @@ refmt emojis -e .md -e .txt project/
 Organize files by common prefix into subdirectories:
 ```bash
 # Preview what groups would be created
-refmt group --preview templates/
+reformat group --preview templates/
 
 # Dry run to see what would happen
-refmt group --dry-run templates/
+reformat group --dry-run templates/
 
 # Group files (keep original filenames)
-refmt group templates/
+reformat group templates/
 
 # Group files and strip prefix from filenames
-refmt group --strip-prefix templates/
+reformat group --strip-prefix templates/
 
 # Group by suffix (split at LAST separator) - for multi-part prefixes
-refmt group --from-suffix templates/
+reformat group --from-suffix templates/
 
 # Process subdirectories recursively
-refmt group -r templates/
+reformat group -r templates/
 
 # Use custom separator (e.g., hyphen)
-refmt group -s '-' templates/
+reformat group -s '-' templates/
 
 # Require at least 3 files to create a group
-refmt group -m 3 templates/
+reformat group -m 3 templates/
 ```
 
 Example transformation with `--strip-prefix` (splits at FIRST separator):
@@ -343,11 +348,11 @@ templates/                                 templates/
 
 #### Broken Reference Detection
 
-After grouping files, refmt can scan your codebase for broken references:
+After grouping files, reformat can scan your codebase for broken references:
 
 ```bash
 # Interactive mode (default) - prompts for scanning
-refmt group --strip-prefix templates/
+reformat group --strip-prefix templates/
 
 # Output:
 # Grouping complete:
@@ -368,10 +373,10 @@ refmt group --strip-prefix templates/
 
 ```bash
 # Non-interactive mode with automatic scanning
-refmt group --strip-prefix --no-interactive --scope src templates/
+reformat group --strip-prefix --no-interactive --scope src templates/
 
 # Skip reference scanning entirely
-refmt group --strip-prefix --no-interactive templates/
+reformat group --strip-prefix --no-interactive templates/
 ```
 
 **Generated files:**
@@ -383,16 +388,16 @@ refmt group --strip-prefix --no-interactive templates/
 Control output verbosity:
 ```bash
 # Info level output (-v)
-refmt -v convert --from-camel --to-snake src/
+reformat -v convert --from-camel --to-snake src/
 
 # Debug level output (-vv)
-refmt -vv clean src/
+reformat -vv clean src/
 
 # Silent mode (errors only)
-refmt -q convert --from-camel --to-snake src/
+reformat -q convert --from-camel --to-snake src/
 
 # Log to file
-refmt --log-file debug.log -v convert --from-camel --to-snake src/
+reformat --log-file debug.log -v convert --from-camel --to-snake src/
 ```
 
 Output example with `-v`:
@@ -420,41 +425,41 @@ Converted '/tmp/test.py'
 
 Convert Python file from camelCase to snake_case:
 ```bash
-refmt convert --from-camel --to-snake main.py
+reformat convert --from-camel --to-snake main.py
 ```
 
 Convert C++ project from snake_case to PascalCase:
 ```bash
-refmt convert --from-snake --to-pascal -r -e .cpp -e .hpp src/
+reformat convert --from-snake --to-pascal -r -e .cpp -e .hpp src/
 ```
 
 Preview converting JavaScript getters to snake_case:
 ```bash
-refmt convert --from-camel --to-snake --word-filter "^get.*" -d src/
+reformat convert --from-camel --to-snake --word-filter "^get.*" -d src/
 ```
 
 ### Whitespace Cleaning Examples
 
 Clean trailing whitespace from entire project:
 ```bash
-refmt clean -r .
+reformat clean -r .
 ```
 
 Clean only Python files in src directory:
 ```bash
-refmt clean -e .py src/
+reformat clean -e .py src/
 ```
 
 Preview what would be cleaned without making changes:
 ```bash
-refmt clean --dry-run .
+reformat clean --dry-run .
 ```
 
 ### Emoji Transformation Examples
 
 Transform task emojis in documentation:
 ```bash
-refmt emojis -r docs/
+reformat emojis -r docs/
 ```
 
 Example transformation:
@@ -478,25 +483,25 @@ After:
 
 Process only markdown files:
 ```bash
-refmt emojis -e .md README.md
+reformat emojis -e .md README.md
 ```
 
 ### File Grouping Examples
 
 Organize template files by prefix (split at first separator):
 ```bash
-refmt group --strip-prefix web/templates/
+reformat group --strip-prefix web/templates/
 ```
 
 Organize files with multi-part prefixes (split at last separator):
 ```bash
 # activity_relationships_list.tmpl -> activity_relationships/list.tmpl
-refmt group --from-suffix web/templates/
+reformat group --from-suffix web/templates/
 ```
 
 Preview groups without making changes:
 ```bash
-refmt group --preview web/templates/
+reformat group --preview web/templates/
 ```
 
 Example output:
@@ -515,17 +520,17 @@ Found 2 potential group(s):
 
 Group files with hyphen separator:
 ```bash
-refmt group -s '-' --strip-prefix components/
+reformat group -s '-' --strip-prefix components/
 ```
 
 Recursively organize nested directories:
 ```bash
-refmt group -r --strip-prefix src/
+reformat group -r --strip-prefix src/
 ```
 
 Group files and automatically scan for broken references:
 ```bash
-refmt group --strip-prefix --scope src templates/
+reformat group --strip-prefix --scope src templates/
 ```
 
 Example `changes.json`:
@@ -557,6 +562,12 @@ Example `fixes.json`:
 }
 ```
 
+## Installation from crates.io
+
+```bash
+cargo install reformat
+```
+
 ## License
 
-See LICENSE file for details.
+MIT License. See [LICENSE](LICENSE) for details.

@@ -53,21 +53,24 @@ pub struct CombinedProcessor {
 impl CombinedProcessor {
     /// Creates a new combined processor with the given options
     pub fn new(options: CombinedOptions) -> Self {
-        // Configure rename options for lowercase transformation
-        let mut rename_options = RenameOptions::default();
-        rename_options.case_transform = CaseTransform::Lowercase;
-        rename_options.recursive = options.recursive;
-        rename_options.dry_run = options.dry_run;
+        let rename_options = RenameOptions {
+            case_transform: CaseTransform::Lowercase,
+            recursive: options.recursive,
+            dry_run: options.dry_run,
+            ..Default::default()
+        };
 
-        // Configure emoji options with defaults
-        let mut emoji_options = EmojiOptions::default();
-        emoji_options.recursive = options.recursive;
-        emoji_options.dry_run = options.dry_run;
+        let emoji_options = EmojiOptions {
+            recursive: options.recursive,
+            dry_run: options.dry_run,
+            ..Default::default()
+        };
 
-        // Configure whitespace options with defaults
-        let mut whitespace_options = WhitespaceOptions::default();
-        whitespace_options.recursive = options.recursive;
-        whitespace_options.dry_run = options.dry_run;
+        let whitespace_options = WhitespaceOptions {
+            recursive: options.recursive,
+            dry_run: options.dry_run,
+            ..Default::default()
+        };
 
         CombinedProcessor {
             options,
@@ -99,7 +102,7 @@ impl CombinedProcessor {
                     .collect();
 
                 // Sort by depth (deepest first) to avoid parent directory rename issues
-                files.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+                files.sort_by_key(|b| std::cmp::Reverse(b.components().count()));
 
                 for file_path in files {
                     self.process_single_file(&file_path, &mut stats)?;
@@ -177,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_combined_processing() {
-        let test_dir = std::env::temp_dir().join("refmt_combined_test");
+        let test_dir = std::env::temp_dir().join("reformat_combined_test");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -209,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_combined_dry_run() {
-        let test_dir = std::env::temp_dir().join("refmt_combined_dry");
+        let test_dir = std::env::temp_dir().join("reformat_combined_dry");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -233,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_combined_recursive() {
-        let test_dir = std::env::temp_dir().join("refmt_combined_recursive");
+        let test_dir = std::env::temp_dir().join("reformat_combined_recursive");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -263,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_combined_non_recursive() {
-        let test_dir = std::env::temp_dir().join("refmt_combined_nonrec");
+        let test_dir = std::env::temp_dir().join("reformat_combined_nonrec");
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
 
@@ -291,7 +294,11 @@ mod tests {
         let entries: Vec<_> = fs::read_dir(&sub_dir).unwrap().collect();
         assert_eq!(entries.len(), 1);
         let actual_name = entries[0].as_ref().unwrap().file_name();
-        assert_eq!(actual_name.to_str().unwrap(), "File2.txt", "Subdirectory file should not be renamed");
+        assert_eq!(
+            actual_name.to_str().unwrap(),
+            "File2.txt",
+            "Subdirectory file should not be renamed"
+        );
 
         fs::remove_dir_all(&test_dir).unwrap();
     }

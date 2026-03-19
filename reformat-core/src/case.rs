@@ -100,10 +100,26 @@ impl CaseFormat {
                     }
                 })
                 .collect::<String>(),
-            CaseFormat::SnakeCase => words.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("_"),
-            CaseFormat::ScreamingSnakeCase => words.iter().map(|w| w.to_uppercase()).collect::<Vec<_>>().join("_"),
-            CaseFormat::KebabCase => words.iter().map(|w| w.to_lowercase()).collect::<Vec<_>>().join("-"),
-            CaseFormat::ScreamingKebabCase => words.iter().map(|w| w.to_uppercase()).collect::<Vec<_>>().join("-"),
+            CaseFormat::SnakeCase => words
+                .iter()
+                .map(|w| w.to_lowercase())
+                .collect::<Vec<_>>()
+                .join("_"),
+            CaseFormat::ScreamingSnakeCase => words
+                .iter()
+                .map(|w| w.to_uppercase())
+                .collect::<Vec<_>>()
+                .join("_"),
+            CaseFormat::KebabCase => words
+                .iter()
+                .map(|w| w.to_lowercase())
+                .collect::<Vec<_>>()
+                .join("-"),
+            CaseFormat::ScreamingKebabCase => words
+                .iter()
+                .map(|w| w.to_uppercase())
+                .collect::<Vec<_>>()
+                .join("-"),
         };
 
         format!("{}{}{}", prefix, result, suffix)
@@ -129,13 +145,19 @@ mod tests {
     #[test]
     fn test_camel_join() {
         let words = vec!["first".to_string(), "name".to_string()];
-        assert_eq!(CaseFormat::CamelCase.join_words(&words, "", ""), "firstName");
+        assert_eq!(
+            CaseFormat::CamelCase.join_words(&words, "", ""),
+            "firstName"
+        );
     }
 
     #[test]
     fn test_snake_join() {
         let words = vec!["first".to_string(), "name".to_string()];
-        assert_eq!(CaseFormat::SnakeCase.join_words(&words, "", ""), "first_name");
+        assert_eq!(
+            CaseFormat::SnakeCase.join_words(&words, "", ""),
+            "first_name"
+        );
     }
 
     #[test]

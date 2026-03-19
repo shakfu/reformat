@@ -93,7 +93,11 @@ impl FileGrouper {
             (filename, None)
         };
 
-        let search_str = if self.options.from_suffix { stem } else { filename };
+        let search_str = if self.options.from_suffix {
+            stem
+        } else {
+            filename
+        };
 
         let pos = if self.options.from_suffix {
             // Find the LAST occurrence of the separator in the stem
@@ -147,10 +151,7 @@ impl FileGrouper {
 
                 // Extract prefix
                 if let Some(prefix) = self.extract_prefix(name) {
-                    prefix_map
-                        .entry(prefix)
-                        .or_default()
-                        .push(path);
+                    prefix_map.entry(prefix).or_default().push(path);
                 }
             }
         }
@@ -247,15 +248,16 @@ impl FileGrouper {
                         );
                         stats.files_renamed += 1;
                     } else {
-                        println!("Moved '{}' -> '{}'", file_path.display(), new_path.display());
+                        println!(
+                            "Moved '{}' -> '{}'",
+                            file_path.display(),
+                            new_path.display()
+                        );
                     }
                 }
 
                 // Record the file move
-                changes.add_file_moved(
-                    &old_rel.to_string_lossy(),
-                    &new_rel.to_string_lossy(),
-                );
+                changes.add_file_moved(&old_rel.to_string_lossy(), &new_rel.to_string_lossy());
                 stats.files_moved += 1;
             }
         }
@@ -366,7 +368,7 @@ mod tests {
     fn create_test_dir(test_name: &str) -> PathBuf {
         let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let test_dir = std::env::temp_dir().join(format!(
-            "refmt_group_{}_{}_{}",
+            "reformat_group_{}_{}_{}",
             test_name,
             std::process::id(),
             counter
@@ -583,8 +585,16 @@ mod tests {
 
         // Create test files with multi-part prefix
         fs::write(test_dir.join("activity_relationships_list.tmpl"), "content").unwrap();
-        fs::write(test_dir.join("activity_relationships_create.tmpl"), "content").unwrap();
-        fs::write(test_dir.join("activity_relationships_delete.tmpl"), "content").unwrap();
+        fs::write(
+            test_dir.join("activity_relationships_create.tmpl"),
+            "content",
+        )
+        .unwrap();
+        fs::write(
+            test_dir.join("activity_relationships_delete.tmpl"),
+            "content",
+        )
+        .unwrap();
 
         let mut options = GroupOptions::default();
         options.from_suffix = true;
@@ -602,9 +612,18 @@ mod tests {
         assert!(test_dir.join("activity_relationships").is_dir());
 
         // Files should be renamed to just the suffix + extension
-        assert!(test_dir.join("activity_relationships").join("list.tmpl").exists());
-        assert!(test_dir.join("activity_relationships").join("create.tmpl").exists());
-        assert!(test_dir.join("activity_relationships").join("delete.tmpl").exists());
+        assert!(test_dir
+            .join("activity_relationships")
+            .join("list.tmpl")
+            .exists());
+        assert!(test_dir
+            .join("activity_relationships")
+            .join("create.tmpl")
+            .exists());
+        assert!(test_dir
+            .join("activity_relationships")
+            .join("delete.tmpl")
+            .exists());
 
         let _ = fs::remove_dir_all(&test_dir);
     }
@@ -698,10 +717,7 @@ mod tests {
             grouper.extract_prefix("activity_relationships_list.tmpl"),
             Some("activity_relationships".to_string())
         );
-        assert_eq!(
-            grouper.extract_prefix("a_b_c.txt"),
-            Some("a_b".to_string())
-        );
+        assert_eq!(grouper.extract_prefix("a_b_c.txt"), Some("a_b".to_string()));
         assert_eq!(
             grouper.extract_prefix("single_part.txt"),
             Some("single".to_string())

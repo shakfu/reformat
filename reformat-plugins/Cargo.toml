@@ -1,11 +1,11 @@
 [package]
-name = "refmt-plugins"
+name = "reformat-plugins"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Plugin system for refmt transformers"
+description = "Plugin system for reformat transformers"
 
 [dependencies]
 anyhow.workspace = true

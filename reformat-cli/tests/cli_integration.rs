@@ -14,19 +14,19 @@ fn get_binary_path() -> std::path::PathBuf {
         .to_path_buf();
 
     // The binary will be in the same directory as the test executable
-    path.push("refmt");
+    path.push("reformat");
 
     if !path.exists() {
         // Fallback: try to use cargo to build and get the path
         let _output = Command::new("cargo")
-            .args(&["build", "-p", "refmt", "--message-format=json"])
+            .args(&["build", "-p", "reformat", "--message-format=json"])
             .output()
-            .expect("Failed to build refmt");
+            .expect("Failed to build reformat");
 
         // Parse the JSON to find the binary path (simplified - just return the default path)
         std::env::current_dir()
             .expect("Failed to get current directory")
-            .join("target/debug/refmt")
+            .join("target/debug/reformat")
     } else {
         path
     }
@@ -37,7 +37,7 @@ fn test_cli_version() {
     let output = Command::new(get_binary_path())
         .arg("--version")
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -49,11 +49,11 @@ fn test_cli_help() {
     let output = Command::new(get_binary_path())
         .arg("--help")
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("refmt"));
+    assert!(stdout.contains("reformat"));
     assert!(stdout.contains("convert"));
     assert!(stdout.contains("clean"));
     assert!(stdout.contains("emojis"));
@@ -61,7 +61,7 @@ fn test_cli_help() {
 
 #[test]
 fn test_cli_basic_conversion() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_basic");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_basic");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -71,7 +71,7 @@ fn test_cli_basic_conversion() {
         .args(&["convert", "--from-camel", "--to-snake"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -83,7 +83,7 @@ fn test_cli_basic_conversion() {
 
 #[test]
 fn test_cli_dry_run() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_dry");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_dry");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -94,7 +94,7 @@ fn test_cli_dry_run() {
         .args(&["convert", "--from-camel", "--to-snake", "--dry-run"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -111,7 +111,7 @@ fn test_cli_dry_run() {
 
 #[test]
 fn test_cli_recursive() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_recursive");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_recursive");
     fs::create_dir_all(&test_dir).unwrap();
 
     let sub_dir = test_dir.join("subdir");
@@ -127,7 +127,7 @@ fn test_cli_recursive() {
         .args(&["convert", "--from-camel", "--to-snake", "-r"])
         .arg(&test_dir)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -142,7 +142,7 @@ fn test_cli_recursive() {
 
 #[test]
 fn test_cli_with_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_prefix");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_prefix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -152,7 +152,7 @@ fn test_cli_with_prefix() {
         .args(&["convert", "--from-camel", "--to-snake", "--prefix", "old_"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -164,7 +164,7 @@ fn test_cli_with_prefix() {
 
 #[test]
 fn test_cli_with_suffix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_suffix");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_suffix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -174,7 +174,7 @@ fn test_cli_with_suffix() {
         .args(&["convert", "--from-camel", "--to-snake", "--suffix", "_new"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -186,17 +186,23 @@ fn test_cli_with_suffix() {
 
 #[test]
 fn test_cli_word_filter() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_filter");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_filter");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
     fs::write(&test_file, "getUserName = 'alice'\nmyVariable = 123").unwrap();
 
     let output = Command::new(get_binary_path())
-        .args(&["convert", "--from-camel", "--to-snake", "--word-filter", "^get.*"])
+        .args(&[
+            "convert",
+            "--from-camel",
+            "--to-snake",
+            "--word-filter",
+            "^get.*",
+        ])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -209,7 +215,7 @@ fn test_cli_word_filter() {
 
 #[test]
 fn test_cli_multiple_extensions() {
-    let test_dir = std::env::temp_dir().join("refmt_test_cli_exts");
+    let test_dir = std::env::temp_dir().join("reformat_test_cli_exts");
     fs::create_dir_all(&test_dir).unwrap();
 
     let py_file = test_dir.join("test.py");
@@ -221,10 +227,18 @@ fn test_cli_multiple_extensions() {
     fs::write(&txt_file, "myVariable = 3").unwrap();
 
     let output = Command::new(get_binary_path())
-        .args(&["convert", "--from-camel", "--to-snake", "-e", ".py", "-e", ".js"])
+        .args(&[
+            "convert",
+            "--from-camel",
+            "--to-snake",
+            "-e",
+            ".py",
+            "-e",
+            ".js",
+        ])
         .arg(&test_dir)
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(output.status.success());
 
@@ -244,7 +258,7 @@ fn test_cli_error_missing_from() {
     let output = Command::new(get_binary_path())
         .args(&["convert", "--to-snake", "dummy.py"])
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -256,7 +270,7 @@ fn test_cli_error_missing_to() {
     let output = Command::new(get_binary_path())
         .args(&["convert", "--from-camel", "dummy.py"])
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -266,9 +280,15 @@ fn test_cli_error_missing_to() {
 #[test]
 fn test_cli_error_conflicting_from() {
     let output = Command::new(get_binary_path())
-        .args(&["convert", "--from-camel", "--from-snake", "--to-kebab", "dummy.py"])
+        .args(&[
+            "convert",
+            "--from-camel",
+            "--from-snake",
+            "--to-kebab",
+            "dummy.py",
+        ])
         .output()
-        .expect("Failed to execute refmt");
+        .expect("Failed to execute reformat");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -286,7 +306,7 @@ fn test_cli_all_format_combinations() {
     ];
 
     for (idx, (from_arg, to_arg, input, expected)) in test_cases.iter().enumerate() {
-        let test_dir = std::env::temp_dir().join(format!("refmt_test_cli_combo_{}", idx));
+        let test_dir = std::env::temp_dir().join(format!("reformat_test_cli_combo_{}", idx));
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.txt");
@@ -296,9 +316,14 @@ fn test_cli_all_format_combinations() {
             .args(&["convert", from_arg, to_arg, "-e", ".txt"])
             .arg(&test_file)
             .output()
-            .expect("Failed to execute refmt");
+            .expect("Failed to execute reformat");
 
-        assert!(output.status.success(), "Failed for {} -> {}", from_arg, to_arg);
+        assert!(
+            output.status.success(),
+            "Failed for {} -> {}",
+            from_arg,
+            to_arg
+        );
 
         let content = fs::read_to_string(&test_file).unwrap();
         assert_eq!(content, *expected, "Failed for {} -> {}", from_arg, to_arg);
@@ -311,7 +336,7 @@ fn test_cli_all_format_combinations() {
 
 #[test]
 fn test_cli_clean_basic() {
-    let test_dir = std::env::temp_dir().join("refmt_test_clean_basic");
+    let test_dir = std::env::temp_dir().join("reformat_test_clean_basic");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.txt");
@@ -321,7 +346,7 @@ fn test_cli_clean_basic() {
         .args(&["clean"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt clean");
+        .expect("Failed to execute reformat clean");
 
     assert!(output.status.success());
 
@@ -336,7 +361,7 @@ fn test_cli_clean_basic() {
 
 #[test]
 fn test_cli_clean_dry_run() {
-    let test_dir = std::env::temp_dir().join("refmt_test_clean_dry");
+    let test_dir = std::env::temp_dir().join("reformat_test_clean_dry");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.txt");
@@ -347,7 +372,7 @@ fn test_cli_clean_dry_run() {
         .args(&["clean", "--dry-run"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt clean");
+        .expect("Failed to execute reformat clean");
 
     assert!(output.status.success());
 
@@ -363,7 +388,7 @@ fn test_cli_clean_dry_run() {
 
 #[test]
 fn test_cli_clean_recursive() {
-    let test_dir = std::env::temp_dir().join("refmt_test_clean_recursive");
+    let test_dir = std::env::temp_dir().join("reformat_test_clean_recursive");
     fs::create_dir_all(&test_dir).unwrap();
 
     let sub_dir = test_dir.join("subdir");
@@ -379,7 +404,7 @@ fn test_cli_clean_recursive() {
         .args(&["clean", "-r"])
         .arg(&test_dir)
         .output()
-        .expect("Failed to execute refmt clean");
+        .expect("Failed to execute reformat clean");
 
     assert!(output.status.success());
 
@@ -394,7 +419,7 @@ fn test_cli_clean_recursive() {
 
 #[test]
 fn test_cli_clean_extension_filtering() {
-    let test_dir = std::env::temp_dir().join("refmt_test_clean_exts");
+    let test_dir = std::env::temp_dir().join("reformat_test_clean_exts");
     fs::create_dir_all(&test_dir).unwrap();
 
     let py_file = test_dir.join("test.py");
@@ -407,7 +432,7 @@ fn test_cli_clean_extension_filtering() {
         .args(&["clean", "-e", ".py"])
         .arg(&test_dir)
         .output()
-        .expect("Failed to execute refmt clean");
+        .expect("Failed to execute reformat clean");
 
     assert!(output.status.success());
 
@@ -422,7 +447,7 @@ fn test_cli_clean_extension_filtering() {
 
 #[test]
 fn test_cli_clean_no_changes_needed() {
-    let test_dir = std::env::temp_dir().join("refmt_test_clean_no_changes");
+    let test_dir = std::env::temp_dir().join("reformat_test_clean_no_changes");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.txt");
@@ -432,7 +457,7 @@ fn test_cli_clean_no_changes_needed() {
         .args(&["clean"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt clean");
+        .expect("Failed to execute reformat clean");
 
     assert!(output.status.success());
 
@@ -447,7 +472,7 @@ fn test_cli_clean_help() {
     let output = Command::new(get_binary_path())
         .args(&["clean", "--help"])
         .output()
-        .expect("Failed to execute refmt clean --help");
+        .expect("Failed to execute reformat clean --help");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -456,7 +481,7 @@ fn test_cli_clean_help() {
 
 #[test]
 fn test_cli_convert_subcommand() {
-    let test_dir = std::env::temp_dir().join("refmt_test_convert_subcommand");
+    let test_dir = std::env::temp_dir().join("reformat_test_convert_subcommand");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test.py");
@@ -466,7 +491,7 @@ fn test_cli_convert_subcommand() {
         .args(&["convert", "--from-camel", "--to-snake"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt convert");
+        .expect("Failed to execute reformat convert");
 
     assert!(output.status.success());
 
@@ -480,7 +505,7 @@ fn test_cli_convert_subcommand() {
 
 #[test]
 fn test_cli_rename_lowercase() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_lowercase");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_lowercase");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("TestFile.txt");
@@ -490,7 +515,7 @@ fn test_cli_rename_lowercase() {
         .args(&["rename_files", "--to-lowercase"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
 
@@ -507,7 +532,7 @@ fn test_cli_rename_lowercase() {
 
 #[test]
 fn test_cli_rename_uppercase() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_uppercase");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_uppercase");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("testfile.txt");
@@ -517,7 +542,7 @@ fn test_cli_rename_uppercase() {
         .args(&["rename_files", "--to-uppercase"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
 
@@ -534,7 +559,7 @@ fn test_cli_rename_uppercase() {
 
 #[test]
 fn test_cli_rename_capitalize() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_capitalize");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_capitalize");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("testFile.txt");
@@ -544,7 +569,7 @@ fn test_cli_rename_capitalize() {
         .args(&["rename_files", "--to-capitalize"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
 
@@ -561,7 +586,7 @@ fn test_cli_rename_capitalize() {
 
 #[test]
 fn test_cli_rename_to_underscore() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_underscore");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_underscore");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test file.txt");
@@ -571,7 +596,7 @@ fn test_cli_rename_to_underscore() {
         .args(&["rename_files", "--underscored"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("test_file.txt").exists());
@@ -582,7 +607,7 @@ fn test_cli_rename_to_underscore() {
 
 #[test]
 fn test_cli_rename_to_hyphen() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_hyphen");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_hyphen");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("test file.txt");
@@ -592,7 +617,7 @@ fn test_cli_rename_to_hyphen() {
         .args(&["rename_files", "--hyphenated"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("test-file.txt").exists());
@@ -603,7 +628,7 @@ fn test_cli_rename_to_hyphen() {
 
 #[test]
 fn test_cli_rename_add_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_add_prefix");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_add_prefix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("file.txt");
@@ -613,7 +638,7 @@ fn test_cli_rename_add_prefix() {
         .args(&["rename_files", "--add-prefix", "new_"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("new_file.txt").exists());
@@ -624,7 +649,7 @@ fn test_cli_rename_add_prefix() {
 
 #[test]
 fn test_cli_rename_rm_prefix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_rm_prefix");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_rm_prefix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("old_file.txt");
@@ -634,7 +659,7 @@ fn test_cli_rename_rm_prefix() {
         .args(&["rename_files", "--rm-prefix", "old_"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("file.txt").exists());
@@ -645,7 +670,7 @@ fn test_cli_rename_rm_prefix() {
 
 #[test]
 fn test_cli_rename_add_suffix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_add_suffix");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_add_suffix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("file.txt");
@@ -655,7 +680,7 @@ fn test_cli_rename_add_suffix() {
         .args(&["rename_files", "--add-suffix", "_backup"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("file_backup.txt").exists());
@@ -666,7 +691,7 @@ fn test_cli_rename_add_suffix() {
 
 #[test]
 fn test_cli_rename_rm_suffix() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_rm_suffix");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_rm_suffix");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("file_old.txt");
@@ -676,7 +701,7 @@ fn test_cli_rename_rm_suffix() {
         .args(&["rename_files", "--rm-suffix", "_old"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("file.txt").exists());
@@ -687,7 +712,7 @@ fn test_cli_rename_rm_suffix() {
 
 #[test]
 fn test_cli_rename_combined() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_combined");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_combined");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("old_Test File.txt");
@@ -705,7 +730,7 @@ fn test_cli_rename_combined() {
         ])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("test_file_new.txt").exists());
@@ -716,7 +741,7 @@ fn test_cli_rename_combined() {
 
 #[test]
 fn test_cli_rename_dry_run() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_dry");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_dry");
     fs::create_dir_all(&test_dir).unwrap();
 
     let test_file = test_dir.join("TestFile.txt");
@@ -727,7 +752,7 @@ fn test_cli_rename_dry_run() {
         .args(&["rename_files", "--to-lowercase", "--dry-run"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
 
@@ -744,7 +769,7 @@ fn test_cli_rename_dry_run() {
 
 #[test]
 fn test_cli_rename_recursive() {
-    let test_dir = std::env::temp_dir().join("refmt_test_rename_recursive");
+    let test_dir = std::env::temp_dir().join("reformat_test_rename_recursive");
     fs::create_dir_all(&test_dir).unwrap();
 
     let sub_dir = test_dir.join("subdir");
@@ -760,7 +785,7 @@ fn test_cli_rename_recursive() {
         .args(&["rename_files", "--to-lowercase", "-r"])
         .arg(&test_dir)
         .output()
-        .expect("Failed to execute refmt rename");
+        .expect("Failed to execute reformat rename");
 
     assert!(output.status.success());
     assert!(test_dir.join("file1.txt").exists());
@@ -774,7 +799,7 @@ fn test_cli_rename_help() {
     let output = Command::new(get_binary_path())
         .args(&["rename_files", "--help"])
         .output()
-        .expect("Failed to execute refmt rename --help");
+        .expect("Failed to execute reformat rename --help");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -784,7 +809,7 @@ fn test_cli_rename_help() {
 // Combined default command tests
 #[test]
 fn test_cli_combined_default() {
-    let test_dir = std::env::temp_dir().join("refmt_test_combined_default");
+    let test_dir = std::env::temp_dir().join("reformat_test_combined_default");
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -795,7 +820,7 @@ fn test_cli_combined_default() {
     let output = Command::new(get_binary_path())
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt (default command)");
+        .expect("Failed to execute reformat (default command)");
 
     assert!(output.status.success());
 
@@ -808,17 +833,27 @@ fn test_cli_combined_default() {
     let entries: Vec<_> = fs::read_dir(&test_dir).unwrap().collect();
     assert_eq!(entries.len(), 1, "Should have exactly one file");
     let actual_name = entries[0].as_ref().unwrap().file_name();
-    assert_eq!(actual_name.to_str().unwrap(), "testfile.txt", "Filename should be lowercase");
+    assert_eq!(
+        actual_name.to_str().unwrap(),
+        "testfile.txt",
+        "Filename should be lowercase"
+    );
 
     // Check content transformations
     let content = fs::read_to_string(&renamed_file).unwrap();
 
     // Emoji should be transformed
     assert!(content.contains("[x]"), "Emoji should be replaced with [x]");
-    assert!(!content.contains("✅"), "Original emoji should not be present");
+    assert!(
+        !content.contains("✅"),
+        "Original emoji should not be present"
+    );
 
     // Whitespace should be cleaned
-    assert!(!content.contains("   \n"), "Trailing spaces should be removed");
+    assert!(
+        !content.contains("   \n"),
+        "Trailing spaces should be removed"
+    );
     assert!(!content.contains("\t\n"), "Trailing tabs should be removed");
 
     fs::remove_dir_all(&test_dir).unwrap();
@@ -826,7 +861,7 @@ fn test_cli_combined_default() {
 
 #[test]
 fn test_cli_combined_recursive() {
-    let test_dir = std::env::temp_dir().join("refmt_test_combined_recursive");
+    let test_dir = std::env::temp_dir().join("reformat_test_combined_recursive");
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -843,7 +878,7 @@ fn test_cli_combined_recursive() {
         .args(&["-r"])
         .arg(&test_dir)
         .output()
-        .expect("Failed to execute refmt -r");
+        .expect("Failed to execute reformat -r");
 
     assert!(output.status.success());
 
@@ -868,7 +903,7 @@ fn test_cli_combined_recursive() {
 
 #[test]
 fn test_cli_combined_dry_run() {
-    let test_dir = std::env::temp_dir().join("refmt_test_combined_dry");
+    let test_dir = std::env::temp_dir().join("reformat_test_combined_dry");
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -880,7 +915,7 @@ fn test_cli_combined_dry_run() {
         .args(&["--dry-run"])
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt --dry-run");
+        .expect("Failed to execute reformat --dry-run");
 
     assert!(output.status.success());
 
@@ -898,7 +933,7 @@ fn test_cli_combined_dry_run() {
 
 #[test]
 fn test_cli_combined_no_changes_needed() {
-    let test_dir = std::env::temp_dir().join("refmt_test_combined_nochange");
+    let test_dir = std::env::temp_dir().join("reformat_test_combined_nochange");
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -909,7 +944,7 @@ fn test_cli_combined_no_changes_needed() {
     let output = Command::new(get_binary_path())
         .arg(&test_file)
         .output()
-        .expect("Failed to execute refmt (default command)");
+        .expect("Failed to execute reformat (default command)");
 
     assert!(output.status.success());
 

@@ -29,10 +29,8 @@ impl Default for EmojiOptions {
             replace_task_emojis: true,
             remove_other_emojis: true,
             file_extensions: vec![
-                ".md", ".txt", ".rst", ".org",
-                ".py", ".rs", ".go", ".java",
-                ".js", ".ts", ".jsx", ".tsx",
-                ".c", ".h", ".cpp", ".hpp",
+                ".md", ".txt", ".rst", ".org", ".py", ".rs", ".go", ".java", ".js", ".ts", ".jsx",
+                ".tsx", ".c", ".h", ".cpp", ".hpp",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -82,8 +80,9 @@ impl EmojiTransformer {
             [\u{1F4CC}]|       # Pushpin (📌)
             [\u{1F4CD}]|       # Round pushpin (📍)
             [\u{1F4CE}]        # Paperclip (📎)
-            "
-        ).unwrap();
+            ",
+        )
+        .unwrap();
 
         // General emoji pattern (all emojis not covered by task emojis)
         let general_emoji_pattern = Regex::new(
@@ -103,8 +102,9 @@ impl EmojiTransformer {
             [\u{1F18E}]|            # Negative squared AB
             [\u{1F191}-\u{1F19A}]|  # Squared CL, COOL, etc.
             [\u{1F1E6}-\u{1F1FF}]   # Regional indicator symbols
-            "
-        ).unwrap();
+            ",
+        )
+        .unwrap();
 
         EmojiTransformer {
             options,
@@ -135,7 +135,15 @@ impl EmojiTransformer {
         }
 
         // Skip build directories
-        let skip_dirs = ["build", "__pycache__", ".git", "node_modules", "venv", ".venv", "target"];
+        let skip_dirs = [
+            "build",
+            "__pycache__",
+            ".git",
+            "node_modules",
+            "venv",
+            ".venv",
+            "target",
+        ];
         if path.components().any(|c| {
             c.as_os_str()
                 .to_str()
@@ -157,32 +165,32 @@ impl EmojiTransformer {
     /// Replace task emojis with text equivalents
     fn replace_task_emoji(&self, emoji: &str) -> &str {
         match emoji {
-            "\u{2705}" => "[x]",      // ✅ -> [x]
-            "\u{2611}" => "[x]",      // ☑ -> [x]
-            "\u{2714}" => "[x]",      // ✔ -> [x]
-            "\u{2713}" => "[x]",      // ✓ -> [x]
-            "\u{2610}" => "[ ]",      // ☐ -> [ ]
-            "\u{2612}" => "[X]",      // ☒ -> [X]
-            "\u{274C}" => "[X]",      // ❌ -> [X]
-            "\u{274E}" => "[X]",      // ❎ -> [X]
-            "\u{26A0}" => "[!]",      // ⚠ -> [!]
-            "\u{26D4}" => "[!]",      // ⛔ -> [!]
-            "\u{2B50}" => "[+]",      // ⭐ -> [+]
+            "\u{2705}" => "[x]",       // ✅ -> [x]
+            "\u{2611}" => "[x]",       // ☑ -> [x]
+            "\u{2714}" => "[x]",       // ✔ -> [x]
+            "\u{2713}" => "[x]",       // ✓ -> [x]
+            "\u{2610}" => "[ ]",       // ☐ -> [ ]
+            "\u{2612}" => "[X]",       // ☒ -> [X]
+            "\u{274C}" => "[X]",       // ❌ -> [X]
+            "\u{274E}" => "[X]",       // ❎ -> [X]
+            "\u{26A0}" => "[!]",       // ⚠ -> [!]
+            "\u{26D4}" => "[!]",       // ⛔ -> [!]
+            "\u{2B50}" => "[+]",       // ⭐ -> [+]
             "\u{1F7E0}" => "[orange]", // 🟠 -> [orange]
             "\u{1F7E1}" => "[yellow]", // 🟡 -> [yellow]
             "\u{1F7E8}" => "[yellow]", // 🟨 -> [yellow]
             "\u{1F7E2}" => "[green]",  // 🟢 -> [green]
             "\u{1F534}" => "[red]",    // 🔴 -> [red]
-            "\u{1F4DD}" => "[note]",  // 📝 -> [note]
-            "\u{1F4CB}" => "[list]",  // 📋 -> [list]
-            "\u{1F4C4}" => "[doc]",   // 📄 -> [doc]
-            "\u{1F4C5}" => "[cal]",   // 📅 -> [cal]
-            "\u{1F4C6}" => "[cal]",   // 📆 -> [cal]
-            "\u{1F5D3}" => "[cal]",   // 🗓 -> [cal]
-            "\u{1F4D1}" => "[tab]",   // 📑 -> [tab]
-            "\u{1F4CC}" => "[pin]",   // 📌 -> [pin]
-            "\u{1F4CD}" => "[pin]",   // 📍 -> [pin]
-            "\u{1F4CE}" => "[clip]",  // 📎 -> [clip]
+            "\u{1F4DD}" => "[note]",   // 📝 -> [note]
+            "\u{1F4CB}" => "[list]",   // 📋 -> [list]
+            "\u{1F4C4}" => "[doc]",    // 📄 -> [doc]
+            "\u{1F4C5}" => "[cal]",    // 📅 -> [cal]
+            "\u{1F4C6}" => "[cal]",    // 📆 -> [cal]
+            "\u{1F5D3}" => "[cal]",    // 🗓 -> [cal]
+            "\u{1F4D1}" => "[tab]",    // 📑 -> [tab]
+            "\u{1F4CC}" => "[pin]",    // 📌 -> [pin]
+            "\u{1F4CD}" => "[pin]",    // 📍 -> [pin]
+            "\u{1F4CE}" => "[clip]",   // 📎 -> [clip]
             _ => "",
         }
     }
@@ -202,9 +210,11 @@ impl EmojiTransformer {
         // Replace task emojis with text alternatives
         if self.options.replace_task_emojis {
             let before = modified_content.clone();
-            let replaced = self.task_emoji_pattern.replace_all(&modified_content, |caps: &regex::Captures| {
-                self.replace_task_emoji(&caps[0])
-            });
+            let replaced = self
+                .task_emoji_pattern
+                .replace_all(&modified_content, |caps: &regex::Captures| {
+                    self.replace_task_emoji(&caps[0])
+                });
 
             if replaced != before {
                 // Count the number of replacements made
@@ -217,7 +227,9 @@ impl EmojiTransformer {
         // Remove other emojis
         if self.options.remove_other_emojis {
             let before = modified_content.clone();
-            let cleaned = self.general_emoji_pattern.replace_all(&modified_content, "");
+            let cleaned = self
+                .general_emoji_pattern
+                .replace_all(&modified_content, "");
             if cleaned != before {
                 // Count the number of emojis removed
                 let emojis_found = self.general_emoji_pattern.find_iter(&before).count();
@@ -228,10 +240,7 @@ impl EmojiTransformer {
 
         if modified_content != original_content {
             if self.options.dry_run {
-                println!(
-                    "Would transform emojis in '{}'",
-                    path.display()
-                );
+                println!("Would transform emojis in '{}'", path.display());
             } else {
                 fs::write(path, modified_content)?;
                 println!("Transformed emojis in '{}'", path.display());
@@ -290,11 +299,15 @@ mod tests {
 
     #[test]
     fn test_replace_task_emojis() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_test");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_test");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.md");
-        fs::write(&test_file, "- [x] Done task\n- [ ] Todo task\n- Task complete\n").unwrap();
+        fs::write(
+            &test_file,
+            "- [x] Done task\n- [ ] Todo task\n- Task complete\n",
+        )
+        .unwrap();
 
         // Replace checkmarks with [x]
         let content = fs::read_to_string(&test_file).unwrap();
@@ -313,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_checkmark_replacement() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_checkmark");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_checkmark");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.txt");
@@ -334,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_dry_run_mode() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_dry");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_dry");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.txt");
@@ -356,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_skip_hidden_files() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_hidden");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_hidden");
         fs::create_dir_all(&test_dir).unwrap();
 
         let hidden_file = test_dir.join(".hidden.txt");
@@ -373,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_extension_filtering() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_ext");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_ext");
         fs::create_dir_all(&test_dir).unwrap();
 
         let md_file = test_dir.join("test.md");
@@ -402,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_recursive_processing() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_recursive");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_recursive");
         fs::create_dir_all(&test_dir).unwrap();
 
         let sub_dir = test_dir.join("subdir");
@@ -424,21 +437,37 @@ mod tests {
 
     #[test]
     fn test_star_and_circle_replacement() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_star_circle");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_star_circle");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.md");
-        fs::write(&test_file, "⭐ Important task\n🟡 In progress\n🟢 Complete\n🔴 Blocked\n").unwrap();
+        fs::write(
+            &test_file,
+            "⭐ Important task\n🟡 In progress\n🟢 Complete\n🔴 Blocked\n",
+        )
+        .unwrap();
 
         let transformer = EmojiTransformer::with_defaults();
         let (files, _) = transformer.process(&test_file).unwrap();
 
         if files > 0 {
             let content = fs::read_to_string(&test_file).unwrap();
-            assert!(content.contains("[+]"), "Star emoji should be replaced with [+]");
-            assert!(content.contains("[yellow]"), "Yellow circle should be replaced with [yellow]");
-            assert!(content.contains("[green]"), "Green circle should be replaced with [green]");
-            assert!(content.contains("[red]"), "Red circle should be replaced with [red]");
+            assert!(
+                content.contains("[+]"),
+                "Star emoji should be replaced with [+]"
+            );
+            assert!(
+                content.contains("[yellow]"),
+                "Yellow circle should be replaced with [yellow]"
+            );
+            assert!(
+                content.contains("[green]"),
+                "Green circle should be replaced with [green]"
+            );
+            assert!(
+                content.contains("[red]"),
+                "Red circle should be replaced with [red]"
+            );
             assert!(!content.contains("⭐"), "Star emoji should be removed");
             assert!(!content.contains("🟡"), "Yellow circle should be removed");
             assert!(!content.contains("🟢"), "Green circle should be removed");
@@ -450,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_yellow_square_replacement() {
-        let test_dir = std::env::temp_dir().join("refmt_emoji_yellow_square");
+        let test_dir = std::env::temp_dir().join("reformat_emoji_yellow_square");
         fs::create_dir_all(&test_dir).unwrap();
 
         let test_file = test_dir.join("test.md");
@@ -461,9 +490,18 @@ mod tests {
 
         if files > 0 {
             let content = fs::read_to_string(&test_file).unwrap();
-            assert!(content.contains("[yellow]"), "Yellow square should be replaced with [yellow]");
-            assert!(!content.contains("🟨"), "Yellow square emoji should be removed");
-            assert!(!content.contains("🟡"), "Yellow circle emoji should be removed");
+            assert!(
+                content.contains("[yellow]"),
+                "Yellow square should be replaced with [yellow]"
+            );
+            assert!(
+                !content.contains("🟨"),
+                "Yellow square emoji should be removed"
+            );
+            assert!(
+                !content.contains("🟡"),
+                "Yellow circle emoji should be removed"
+            );
         }
 
         fs::remove_dir_all(&test_dir).unwrap();
