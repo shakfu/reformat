@@ -65,7 +65,13 @@ Organized as a Cargo workspace:
 
 ## Installation
 
-Install from the workspace:
+Install from crates.io:
+
+```bash
+cargo install reformat
+```
+
+Or install from the workspace:
 
 ```bash
 cargo install --path reformat-cli
@@ -560,12 +566,6 @@ Example `fixes.json`:
     }
   ]
 }
-```
-
-## Installation from crates.io
-
-```bash
-cargo install reformat
 ```
 
 ## License
