@@ -1,3 +1,5 @@
+mod config;
+
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info};
@@ -35,12 +37,16 @@ struct Cli {
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
 
+    /// Run a named preset from reformat.json
+    #[arg(short = 'p', long = "preset", requires = "path")]
+    preset: Option<String>,
+
     /// Process files recursively (when no subcommand is specified)
     #[arg(short = 'r', long, requires = "path")]
     recursive: bool,
 
-    /// Dry run (don't modify files, when no subcommand is specified)
-    #[arg(short = 'd', long = "dry-run", requires = "path")]
+    /// Dry run (don't modify files)
+    #[arg(short = 'd', long = "dry-run")]
     dry_run: bool,
 
     /// Enable verbose output (can be used multiple times: -v, -vv, -vvv)
@@ -1015,6 +1021,229 @@ fn run_group(
 }
 
 #[time("info")]
+fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
+    let config = config::load_config()?
+        .ok_or_else(|| anyhow::anyhow!("reformat.json not found in current directory"))?;
+    let preset = config::get_preset(&config, name)?;
+
+    info!(
+        "Running preset '{}' with {} step(s) on: {}",
+        name,
+        preset.steps.len(),
+        path.display()
+    );
+
+    for (i, step) in preset.steps.iter().enumerate() {
+        let step_label = format!("[{}/{}] {}", i + 1, preset.steps.len(), step);
+        info!("Executing step: {}", step_label);
+
+        match step.as_str() {
+            "rename" => {
+                let cfg = preset.rename.as_ref();
+                let mut options = RenameOptions {
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(c) = cfg {
+                    if let Some(ct) = c.parse_case_transform() {
+                        options.case_transform = ct;
+                    }
+                    if let Some(sr) = c.parse_space_replace() {
+                        options.space_replace = sr;
+                    }
+                    if let Some(r) = c.recursive {
+                        options.recursive = r;
+                    }
+                    if let Some(s) = c.include_symlinks {
+                        options.include_symlinks = s;
+                    }
+                }
+
+                let spinner = create_spinner(&format!("{}: renaming files...", step_label));
+                let renamer = FileRenamer::new(options);
+                let count = renamer.process(&path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if count > 0 {
+                    println!("{}  rename: {} file(s) renamed", prefix, count);
+                } else {
+                    println!("  rename: no files needed renaming");
+                }
+            }
+
+            "emojis" => {
+                let cfg = preset.emojis.as_ref();
+                let mut options = EmojiOptions {
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(c) = cfg {
+                    if let Some(v) = c.replace_task_emojis {
+                        options.replace_task_emojis = v;
+                    }
+                    if let Some(v) = c.remove_other_emojis {
+                        options.remove_other_emojis = v;
+                    }
+                    if let Some(ref exts) = c.file_extensions {
+                        options.file_extensions = exts.clone();
+                    }
+                    if let Some(r) = c.recursive {
+                        options.recursive = r;
+                    }
+                }
+
+                let spinner = create_spinner(&format!("{}: transforming emojis...", step_label));
+                let transformer = EmojiTransformer::new(options);
+                let (files, changes) = transformer.process(&path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if files > 0 {
+                    println!(
+                        "{}  emojis: {} file(s), {} change(s)",
+                        prefix, files, changes
+                    );
+                } else {
+                    println!("  emojis: no files contained emojis");
+                }
+            }
+
+            "clean" => {
+                let cfg = preset.clean.as_ref();
+                let mut options = WhitespaceOptions {
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(c) = cfg {
+                    if let Some(v) = c.remove_trailing {
+                        options.remove_trailing = v;
+                    }
+                    if let Some(ref exts) = c.file_extensions {
+                        options.file_extensions = exts.clone();
+                    }
+                    if let Some(r) = c.recursive {
+                        options.recursive = r;
+                    }
+                }
+
+                let spinner = create_spinner(&format!("{}: cleaning whitespace...", step_label));
+                let cleaner = WhitespaceCleaner::new(options);
+                let (files, lines) = cleaner.process(&path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if files > 0 {
+                    println!(
+                        "{}  clean: {} file(s), {} line(s) cleaned",
+                        prefix, files, lines
+                    );
+                } else {
+                    println!("  clean: no files needed cleaning");
+                }
+            }
+
+            "convert" => {
+                let cfg = preset.convert.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "preset '{}': 'convert' step requires a [convert] config with from_format and to_format",
+                        name
+                    )
+                })?;
+                let from = cfg.parse_from_format().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "preset '{}': convert.from_format is missing or invalid",
+                        name
+                    )
+                })?;
+                let to = cfg.parse_to_format().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "preset '{}': convert.to_format is missing or invalid",
+                        name
+                    )
+                })?;
+
+                let converter = CaseConverter::new(
+                    from,
+                    to,
+                    cfg.file_extensions.clone(),
+                    cfg.recursive.unwrap_or(true),
+                    dry_run,
+                    cfg.prefix.clone().unwrap_or_default(),
+                    cfg.suffix.clone().unwrap_or_default(),
+                    None, // strip_prefix
+                    None, // strip_suffix
+                    None, // replace_prefix_from
+                    None, // replace_prefix_to
+                    None, // replace_suffix_from
+                    None, // replace_suffix_to
+                    cfg.glob.clone(),
+                    cfg.word_filter.clone(),
+                )?;
+
+                let spinner = create_spinner(&format!("{}: converting case...", step_label));
+                converter.process_directory(&path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                println!("{}  convert: {:?} -> {:?} complete", prefix, from, to);
+            }
+
+            "group" => {
+                let cfg = preset.group.as_ref();
+                let mut options = GroupOptions {
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(c) = cfg {
+                    if let Some(ref s) = c.separator {
+                        if let Some(ch) = s.chars().next() {
+                            options.separator = ch;
+                        }
+                    }
+                    if let Some(v) = c.min_count {
+                        options.min_count = v;
+                    }
+                    if let Some(v) = c.strip_prefix {
+                        options.strip_prefix = v;
+                    }
+                    if let Some(v) = c.from_suffix {
+                        options.from_suffix = v;
+                        if v {
+                            options.strip_prefix = true;
+                        }
+                    }
+                    if let Some(r) = c.recursive {
+                        options.recursive = r;
+                    }
+                }
+
+                let spinner = create_spinner(&format!("{}: grouping files...", step_label));
+                let grouper = FileGrouper::new(options);
+                let result = grouper.process_with_changes(&path)?;
+                spinner.finish_and_clear();
+
+                let stats = &result.stats;
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if stats.files_moved > 0 {
+                    println!(
+                        "{}  group: {} dir(s) created, {} file(s) moved",
+                        prefix, stats.dirs_created, stats.files_moved
+                    );
+                } else {
+                    println!("  group: no files needed grouping");
+                }
+            }
+
+            _ => unreachable!("step validation should have caught this"),
+        }
+    }
+
+    println!("Preset '{}' complete.", name);
+    Ok(())
+}
+
+#[time("info")]
 fn run_combined(path: PathBuf, recursive: bool, dry_run: bool) -> anyhow::Result<()> {
     info!("Running combined transformations on: {}", path.display());
     info!("Recursive: {}, Dry run: {}", recursive, dry_run);
@@ -1076,8 +1305,17 @@ fn main() -> anyhow::Result<()> {
 
     let result = match cli.command {
         None => {
-            // Default command: run combined processing
-            if let Some(path) = cli.path {
+            if let Some(preset_name) = cli.preset {
+                // Preset mode: run named preset from reformat.json
+                if let Some(path) = cli.path {
+                    debug!("Running preset '{}'", preset_name);
+                    run_preset(&preset_name, path, cli.dry_run)
+                } else {
+                    error!("No path specified. Usage: reformat -p <preset> <path>");
+                    std::process::exit(1);
+                }
+            } else if let Some(path) = cli.path {
+                // Default command: run combined processing
                 debug!("Running combined processing (default command)");
                 run_combined(path, cli.recursive, cli.dry_run)
             } else {

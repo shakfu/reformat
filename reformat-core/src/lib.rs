@@ -19,6 +19,7 @@
 pub mod case;
 pub mod changes;
 pub mod combined;
+pub mod config;
 pub mod converter;
 pub mod emoji;
 pub mod group;
@@ -30,6 +31,7 @@ pub mod whitespace;
 pub use case::CaseFormat;
 pub use changes::{Change, ChangeRecord};
 pub use combined::{CombinedOptions, CombinedProcessor, CombinedStats};
+pub use config::{Preset, ReformatConfig};
 pub use converter::CaseConverter;
 pub use emoji::{EmojiOptions, EmojiTransformer};
 pub use group::{FileGrouper, GroupOptions, GroupResult, GroupStats};

@@ -449,6 +449,7 @@ dependencies = [
  "logging_timer",
  "reformat-core",
  "reformat-plugins",
+ "serde_json",
  "simplelog",
 ]
 

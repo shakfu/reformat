@@ -933,3 +933,200 @@ fn test_cli_combined_no_changes_needed() {
 
     fs::remove_dir_all(&test_dir).unwrap();
 }
+
+// =============================================================================
+// Preset tests
+// =============================================================================
+
+#[test]
+fn test_preset_clean_step() {
+    let test_dir = std::env::temp_dir().join("reformat_test_preset_clean");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    // Create a reformat.json in the test dir
+    fs::write(
+        test_dir.join("reformat.json"),
+        r#"{"tidy": {"steps": ["clean"]}}"#,
+    )
+    .unwrap();
+
+    // Create a file with trailing whitespace
+    let test_file = test_dir.join("code.py");
+    fs::write(&test_file, "hello   \nworld\t\n").unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["-p", "tidy"])
+        .arg(&test_dir)
+        .current_dir(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert_eq!(content, "hello\nworld\n");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("clean:"));
+    assert!(stdout.contains("Preset 'tidy' complete."));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_preset_rename_step() {
+    let test_dir = std::env::temp_dir().join("reformat_test_preset_rename");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    fs::write(
+        test_dir.join("reformat.json"),
+        r#"{"lower": {"steps": ["rename"], "rename": {"case_transform": "lowercase"}}}"#,
+    )
+    .unwrap();
+
+    let test_file = test_dir.join("MyFile.txt");
+    fs::write(&test_file, "content").unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["-p", "lower"])
+        .arg(&test_dir)
+        .current_dir(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    // On case-insensitive filesystems, check actual filename
+    let entries: Vec<_> = fs::read_dir(&test_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_str().map_or(false, |n| n.ends_with(".txt")))
+        .collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].file_name().to_str().unwrap(), "myfile.txt");
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_preset_multi_step() {
+    let test_dir = std::env::temp_dir().join("reformat_test_preset_multi");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    fs::write(
+        test_dir.join("reformat.json"),
+        r#"{"all": {"steps": ["rename", "clean"], "rename": {"case_transform": "lowercase"}}}"#,
+    )
+    .unwrap();
+
+    let test_file = test_dir.join("MyCode.py");
+    fs::write(&test_file, "x = 1   \ny = 2\t\n").unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["-p", "all"])
+        .arg(&test_dir)
+        .current_dir(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    // File should be renamed and cleaned
+    let renamed = test_dir.join("mycode.py");
+    assert!(renamed.exists() || test_dir.join("MyCode.py").exists()); // case-insensitive FS
+    let entries: Vec<_> = fs::read_dir(&test_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_str().map_or(false, |n| n.ends_with(".py")))
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let actual_name = entries[0].file_name();
+    assert_eq!(actual_name.to_str().unwrap(), "mycode.py");
+
+    let content = fs::read_to_string(entries[0].path()).unwrap();
+    assert_eq!(content, "x = 1\ny = 2\n");
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_preset_dry_run_override() {
+    let test_dir = std::env::temp_dir().join("reformat_test_preset_dryrun");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    fs::write(
+        test_dir.join("reformat.json"),
+        r#"{"tidy": {"steps": ["clean"]}}"#,
+    )
+    .unwrap();
+
+    let test_file = test_dir.join("code.rs");
+    let original = "let x = 1;   \n";
+    fs::write(&test_file, original).unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["-p", "tidy", "--dry-run"])
+        .arg(&test_dir)
+        .current_dir(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    // File should be unchanged in dry-run
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert_eq!(content, original);
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_preset_missing_config_file() {
+    let test_dir = std::env::temp_dir().join("reformat_test_preset_noconfig");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    // No reformat.json created
+    let output = Command::new(get_binary_path())
+        .args(&["-p", "whatever"])
+        .arg(&test_dir)
+        .current_dir(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("reformat.json not found"));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_preset_unknown_preset_name() {
+    let test_dir = std::env::temp_dir().join("reformat_test_preset_unknown");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    fs::write(
+        test_dir.join("reformat.json"),
+        r#"{"code": {"steps": ["clean"]}}"#,
+    )
+    .unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["-p", "nonexistent"])
+        .arg(&test_dir)
+        .current_dir(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("preset 'nonexistent' not found"));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
