@@ -2,50 +2,54 @@
 
 ## Overview
 
-reformat is a modular code transformation framework implemented in Rust. It provides a library-first design with a command-line interface for applying transformations to source code files. The framework supports case format conversion, whitespace cleaning, emoji transformation, and file renaming operations.
+reformat is a modular code transformation framework implemented in Rust. It provides a library-first design with a command-line interface for applying transformations to source code files. The framework supports case format conversion, whitespace cleaning, emoji transformation, file renaming, file grouping with broken reference detection, and preset-based transformation pipelines.
 
 ## Design Principles
 
 1. **Library-First**: Core functionality in `reformat-core`, CLI as thin wrapper in `reformat-cli`
 2. **Modularity**: Each transformation is independent and self-contained
-3. **Composability**: Combined processor enables efficient single-pass operations
+3. **Composability**: Combined processor and presets enable multi-step pipelines
 4. **Type Safety**: Strong typing with enums and structs ensures compile-time guarantees
-5. **Performance**: Single-pass processing and efficient regex-based matching
+5. **Change Tracking**: File operations produce structured JSON records for auditing
 6. **Usability**: Simple struct-based API with sensible defaults
 
-## Current Project Structure
+## Project Structure
 
 ### Workspace Organization
 
-The project is organized as a Cargo workspace:
-
 ```
 reformat/
-├── Cargo.toml                 # Workspace definition
+├── Cargo.toml                    # Workspace definition (v0.1.5)
+├── reformat.json                 # Example preset configuration
 ├── reformat-core/                # Core library
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs             # Public API exports
-│       ├── case.rs            # CaseFormat enum and word splitting
-│       ├── converter.rs       # CaseConverter implementation
-│       ├── whitespace.rs      # WhitespaceCleaner implementation
-│       ├── emoji.rs           # EmojiTransformer implementation
-│       ├── rename.rs          # FileRenamer implementation
-│       └── combined.rs        # CombinedProcessor for single-pass operations
+│       ├── lib.rs                # Public API exports
+│       ├── case.rs               # CaseFormat enum and word splitting
+│       ├── changes.rs            # Change tracking (ChangeRecord, Change)
+│       ├── combined.rs           # CombinedProcessor for single-pass operations
+│       ├── config.rs             # Preset configuration types
+│       ├── converter.rs          # CaseConverter implementation
+│       ├── emoji.rs              # EmojiTransformer implementation
+│       ├── group.rs              # FileGrouper implementation
+│       ├── refs.rs               # ReferenceScanner and ReferenceFixer
+│       ├── rename.rs             # FileRenamer implementation
+│       └── whitespace.rs         # WhitespaceCleaner implementation
 │
 ├── reformat-cli/                 # CLI binary
 │   ├── Cargo.toml
 │   └── src/
-│       └── main.rs            # Clap-based CLI with subcommands
+│       ├── main.rs               # Clap-based CLI with subcommands
+│       └── config.rs             # Config file loading
 │
 ├── reformat-plugins/             # Plugin system (foundation only)
 │   ├── Cargo.toml
 │   └── src/
-│       └── lib.rs             # Plugin API placeholder
+│       └── lib.rs                # Plugin API placeholder
 │
-└── tests/                     # Integration tests
-    ├── cli_integration.rs     # CLI functionality tests
-    └── library_integration.rs # Library API tests
+└── tests/                        # Integration tests
+    ├── cli_integration.rs        # CLI functionality tests
+    └── library_integration.rs    # Library API tests
 ```
 
 ### Workspace Cargo.toml
@@ -57,35 +61,27 @@ members = [
     "reformat-cli",
     "reformat-plugins",
 ]
+resolver = "2"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.1.5"
 edition = "2021"
 
 [workspace.dependencies]
 regex = "1.11"
+aho-corasick = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 anyhow = "1.0"
+thiserror = "1.0"
 walkdir = "2.5"
 glob = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 simplelog = "0.12"
 indicatif = "0.17"
+logging_timer = "1.1"
 ```
-
-### Core Library (reformat-core)
-
-The core library provides the fundamental transformation capabilities:
-
-**Dependencies:**
-- `regex` - Pattern matching for case formats
-- `walkdir` - Directory traversal
-- `glob` - File pattern matching
-- `anyhow` - Error handling
-- `rayon` (optional) - Parallel processing support
-
-**Features:**
-- `default = ["parallel"]` - Default feature set
-- `parallel` - Enable parallel processing (currently not utilized)
 
 ## Core Components
 
@@ -153,8 +149,6 @@ pub struct CaseConverter {
 - `process_directory(&self, path: &Path) -> Result<()>` - Processes directory
 - `matches_glob(&self, path: &Path, base: &Path) -> bool` - Checks glob patterns
 
-**Default Extensions:** `.c`, `.h`, `.py`, `.md`, `.js`, `.ts`, `.java`, `.cpp`, `.hpp`
-
 ### 3. WhitespaceCleaner (`whitespace.rs`)
 
 Removes trailing whitespace while preserving line endings.
@@ -170,11 +164,6 @@ pub struct WhitespaceOptions {
     pub dry_run: bool,
 }
 ```
-
-**Features:**
-- Preserves CRLF/LF line endings
-- Skips hidden files and build directories (`.git`, `node_modules`, `target`, etc.)
-- Configurable file extension filtering
 
 **Key Methods:**
 - `clean_file(&self, path: &Path) -> Result<usize>` - Returns lines cleaned
@@ -194,34 +183,18 @@ pub struct EmojiOptions {
     pub extensions: Vec<String>,
     pub recursive: bool,
     pub dry_run: bool,
-    pub replace_task: bool,    // Default: true
-    pub remove_other: bool,    // Default: true
+    pub replace_task: bool,
+    pub remove_other: bool,
 }
 ```
-
-**Emoji Mappings:**
-- ✅ → `[x]` (checkmark)
-- ☐ → `[ ]` (empty box)
-- ☑ → `[x]` (checked box)
-- ✓ → `[x]` (check mark)
-- ☒ → `[X]` (crossed box)
-- ❌ → `[X]` (cross mark)
-- ⚠ → `[!]` (warning)
-- 🟡 → `[yellow]` (status indicator)
-- 🟢 → `[green]` (status indicator)
-- 🔴 → `[red]` (status indicator)
-- ⭐ → `[+]` (star)
-- 📝 → `[note]` (memo)
-- 📋 → `[list]` (clipboard)
 
 **Key Methods:**
 - `transform_file(&self, path: &Path) -> Result<usize>` - Returns emoji changes count
 - `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files, changes)
-- `replace_task_emoji(&self, content: &str) -> String` - Task emoji mapping
 
 ### 5. FileRenamer (`rename.rs`)
 
-Renames files with case transformations and separator replacements.
+Renames files with case transformations, separator replacements, and timestamp prefixes.
 
 ```rust
 pub struct FileRenamer {
@@ -232,49 +205,151 @@ pub struct RenameOptions {
     pub case_transform: CaseTransform,
     pub space_replace: SpaceReplace,
     pub add_prefix: Option<String>,
-    pub rm_prefix: Option<String>,
+    pub remove_prefix: Option<String>,
     pub add_suffix: Option<String>,
-    pub rm_suffix: Option<String>,
+    pub remove_suffix: Option<String>,
+    pub replace_prefix: Option<(String, String)>,
+    pub replace_suffix: Option<(String, String)>,
+    pub timestamp_format: TimestampFormat,
+    pub recursive: bool,
+    pub dry_run: bool,
+    pub include_symlinks: bool,
+}
+
+pub enum CaseTransform { None, Lowercase, Uppercase, Capitalize }
+pub enum SpaceReplace { None, Underscore, Hyphen }
+pub enum TimestampFormat { None, Long, Short }  // YYYYMMDD or YYMMDD
+```
+
+**Key Methods:**
+- `rename_file(&self, path: &Path, is_symlink: bool) -> Result<bool>` - Renames single file
+- `process(&self, path: &Path) -> Result<usize>` - Returns files renamed
+
+### 6. FileGrouper (`group.rs`)
+
+Organizes files by common prefix into subdirectories with change tracking.
+
+```rust
+pub struct FileGrouper {
+    options: GroupOptions,
+}
+
+pub struct GroupOptions {
+    pub separator: char,       // Default: '_'
+    pub min_count: usize,      // Default: 2
+    pub strip_prefix: bool,    // Remove prefix from filenames after moving
+    pub from_suffix: bool,     // Split at LAST separator instead of first
     pub recursive: bool,
     pub dry_run: bool,
 }
 
-pub enum CaseTransform {
-    None,
-    Lowercase,
-    Uppercase,
-    Capitalize,
+pub struct GroupStats {
+    pub dirs_created: usize,
+    pub files_moved: usize,
+    pub files_renamed: usize,
 }
 
-pub enum SpaceReplace {
-    None,
-    Underscore,
-    Hyphen,
+pub struct GroupResult {
+    pub stats: GroupStats,
+    pub changes: ChangeRecord,
 }
 ```
 
-**Transformation Pipeline:**
-1. Remove prefix (--rm-prefix)
-2. Remove suffix (--rm-suffix)
-3. Replace separators (--underscored or --hyphenated)
-4. Case transformation (--to-lowercase, --to-uppercase, --to-capitalize)
-5. Add prefix (--add-prefix)
-6. Add suffix (--add-suffix)
+**Key Methods:**
+- `process(&self, path: &Path) -> Result<GroupStats>` - Process directory
+- `process_with_changes(&self, path: &Path) -> Result<GroupResult>` - Process with change tracking
+- `preview(&self, path: &Path) -> Result<HashMap<String, Vec<String>>>` - Preview groups
+
+### 7. Change Tracking (`changes.rs`)
+
+Structured records of file operations for auditing and reference fixing.
+
+```rust
+pub enum Change {
+    DirectoryCreated { path: String },
+    FileMoved { from: String, to: String },
+    FileRenamed { from: String, to: String, directory: String },
+}
+
+pub struct ChangeRecord {
+    pub operation: String,
+    pub timestamp: String,
+    pub base_dir: String,
+    pub options: Option<serde_json::Value>,
+    pub changes: Vec<Change>,
+}
+```
 
 **Key Methods:**
-- `rename_file(&self, path: &Path) -> Result<bool>` - Renames single file
-- `process(&self, path: &Path) -> Result<usize>` - Returns files renamed
+- `write_to_file(&self, path: &Path) -> Result<()>` - Serialize to JSON
+- `read_from_file(path: &Path) -> Result<Self>` - Deserialize from JSON
+- `file_moves(&self) -> Vec<(&str, &str)>` - Extract file move pairs
 
-### 6. CombinedProcessor (`combined.rs`)
+### 8. Reference Scanner & Fixer (`refs.rs`)
+
+Scans codebases for broken references after file operations and proposes fixes.
+
+```rust
+pub struct ReferenceScanner { /* ... */ }
+pub struct ReferenceFixer { /* ... */ }
+
+pub struct ScanOptions {
+    pub extensions: Vec<String>,
+    pub exclude_patterns: Vec<String>,
+    pub recursive: bool,
+    pub verbose: bool,
+}
+
+pub struct ReferenceFix {
+    pub file: String,
+    pub line: usize,
+    pub column: usize,
+    pub context: String,
+    pub old_reference: String,
+    pub new_reference: String,
+}
+
+pub struct FixRecord {
+    pub generated_from: String,
+    pub timestamp: String,
+    pub scan_directories: Vec<String>,
+    pub fixes: Vec<ReferenceFix>,
+}
+```
+
+**Key Methods on ReferenceScanner:**
+- `from_change_record(record: &ChangeRecord, options: ScanOptions) -> Self`
+- `new(file_moves: HashMap<String, String>, options: ScanOptions) -> Self`
+
+### 9. Configuration & Presets (`config.rs`)
+
+Defines reusable transformation pipelines via `reformat.json`.
+
+```rust
+pub type ReformatConfig = HashMap<String, Preset>;
+
+pub struct Preset {
+    pub steps: Vec<String>,       // e.g., ["rename", "emojis", "clean"]
+    pub rename: Option<RenameConfig>,
+    pub emojis: Option<EmojiConfig>,
+    pub clean: Option<CleanConfig>,
+    pub convert: Option<ConvertConfig>,
+    pub group: Option<GroupConfig>,
+}
+```
+
+**Valid steps:** `rename`, `emojis`, `clean`, `convert`, `group`
+
+Each step has a corresponding config struct with optional overrides. Steps without explicit configuration use sensible defaults.
+
+### 10. CombinedProcessor (`combined.rs`)
 
 Efficient single-pass processing applying multiple transformations.
 
 ```rust
 pub struct CombinedProcessor {
     options: CombinedOptions,
-    rename_options: RenameOptions,
-    emoji_options: EmojiOptions,
-    whitespace_options: WhitespaceOptions,
+    // ...
 }
 
 pub struct CombinedOptions {
@@ -296,12 +371,6 @@ pub struct CombinedStats {
 2. Transform emojis (task emoji replacement + removal)
 3. Clean whitespace
 
-**Benefits:**
-- **3x faster** than running individual commands
-- Single directory traversal
-- Automatic path tracking after renames
-- Comprehensive statistics
-
 **Key Methods:**
 - `new(options: CombinedOptions) -> Self` - Creates processor with pipeline
 - `with_defaults() -> Self` - Creates with default options
@@ -313,397 +382,123 @@ pub struct CombinedStats {
 
 Built with `clap` derive macros using subcommand architecture.
 
-**Global Flags:**
-- `-v, --verbose` - Multi-level verbosity (can be repeated: `-v`, `-vv`, `-vvv`)
+**Global Options:**
+- `-v, --verbose` - Multi-level verbosity (`-v`, `-vv`, `-vvv`)
 - `-q, --quiet` - Quiet mode (errors only)
 - `--log-file <PATH>` - Write logs to file
-
-**Logging Levels:**
-- No flag: WARN (minimal output)
-- `-v`: INFO (progress and completion)
-- `-vv`: DEBUG (detailed operations)
-- `-vvv`: TRACE (maximum verbosity)
-
-**UI Features:**
-- Progress spinners with `indicatif`
-- Automatic operation timing with `logging_timer`
-- Color-coded output with `simplelog`
-- Structured timestamps
+- `-p, --preset <NAME>` - Run a named preset from `reformat.json`
 
 ### Commands
 
-#### Default Command
+#### Default Command (no subcommand)
 
-Runs all transformations in a single pass (no subcommand required).
-
+Runs all transformations in a single pass:
 ```bash
 reformat <path>         # Process path
 reformat -r <path>      # Process recursively
 reformat -d <path>      # Dry run
 ```
 
-**Pipeline:**
-1. Rename to lowercase
-2. Transform emojis
-3. Clean whitespace
-
-#### Subcommands
-
-**1. `convert` - Case format conversion**
+#### `convert` - Case format conversion
 
 ```bash
 reformat convert --from-camel --to-snake src/
 ```
 
-Options:
-- `--from-<format>`, `--to-<format>` - Case format selection
-- `-r, --recursive` - Process directories recursively
-- `-d, --dry-run` - Preview changes
-- `-e, --extensions` - File extension filter
-- `--glob <PATTERN>` - File pattern filter
-- `--word-filter <REGEX>` - Word-level filter
-- `--prefix`, `--suffix` - Add prefix/suffix to converted identifiers
-- `--strip-prefix`, `--strip-suffix` - Remove prefix/suffix before conversion
-- `--replace-prefix-from`, `--replace-prefix-to` - Replace prefix
-- `--replace-suffix-from`, `--replace-suffix-to` - Replace suffix
-
-**2. `clean` - Whitespace cleaning**
+#### `clean` - Whitespace cleaning
 
 ```bash
 reformat clean src/
 ```
 
-Options:
-- `-r, --recursive` - Process recursively (default: true)
-- `-d, --dry-run` - Preview changes
-- `-e, --extensions` - File extension filter
-
-**3. `emojis` - Emoji transformation**
+#### `emojis` - Emoji transformation
 
 ```bash
 reformat emojis docs/
 ```
 
-Options:
-- `-r, --recursive` - Process recursively (default: true)
-- `-d, --dry-run` - Preview changes
-- `-e, --extensions` - File extension filter
-- `--replace-task` - Replace task emojis (default: true)
-- `--remove-other` - Remove non-task emojis (default: true)
-
-**4. `rename_files` - File renaming**
+#### `rename_files` - File renaming
 
 ```bash
 reformat rename_files --to-lowercase src/
+reformat rename_files --timestamp-long src/   # Add YYYYMMDD prefix
 ```
 
-Options:
-- `-r, --recursive` - Process recursively (default: true)
-- `-d, --dry-run` - Preview changes
-- `--to-lowercase`, `--to-uppercase`, `--to-capitalize` - Case transformations
-- `--underscored`, `--hyphenated` - Separator replacements
-- `--add-prefix`, `--rm-prefix` - Prefix operations
-- `--add-suffix`, `--rm-suffix` - Suffix operations
+#### `group` - File grouping by prefix
 
-## Library Usage
+```bash
+reformat group --strip-prefix templates/
+reformat group --from-suffix templates/       # Split at LAST separator
+reformat group --preview templates/           # Preview only
+reformat group --strip-prefix --scope src templates/  # Scan for broken refs
+```
 
-### Public API
+## Public API
 
-All transformers are exported from `reformat-core`:
+All types are exported from `reformat-core`:
 
 ```rust
 pub use case::CaseFormat;
+pub use changes::{Change, ChangeRecord};
+pub use combined::{CombinedOptions, CombinedProcessor, CombinedStats};
+pub use config::{Preset, ReformatConfig};
 pub use converter::CaseConverter;
+pub use emoji::{EmojiOptions, EmojiTransformer};
+pub use group::{FileGrouper, GroupOptions, GroupResult, GroupStats};
+pub use refs::{ApplyResult, FixRecord, ReferenceFix, ReferenceFixer, ReferenceScanner, ScanOptions};
+pub use rename::{CaseTransform, FileRenamer, RenameOptions, SpaceReplace, TimestampFormat};
 pub use whitespace::{WhitespaceCleaner, WhitespaceOptions};
-pub use emoji::{EmojiTransformer, EmojiOptions};
-pub use rename::{FileRenamer, RenameOptions, CaseTransform, SpaceReplace};
-pub use combined::{CombinedProcessor, CombinedOptions, CombinedStats};
-```
 
-### Usage Examples
-
-**Case Conversion:**
-```rust
-use reformat_core::{CaseConverter, CaseFormat};
-
-let converter = CaseConverter::new(
-    CaseFormat::CamelCase,
-    CaseFormat::SnakeCase,
-    None, false, false,
-    String::new(), String::new(),
-    None, None, None, None, None, None,
-    None, None
-)?;
-
-converter.process_directory(Path::new("src"))?;
-```
-
-**Whitespace Cleaning:**
-```rust
-use reformat_core::{WhitespaceCleaner, WhitespaceOptions};
-
-let mut options = WhitespaceOptions::default();
-options.recursive = true;
-
-let cleaner = WhitespaceCleaner::new(options);
-let (files, lines) = cleaner.process(Path::new("src"))?;
-```
-
-**Combined Processing:**
-```rust
-use reformat_core::{CombinedProcessor, CombinedOptions};
-
-let processor = CombinedProcessor::with_defaults();
-let stats = processor.process(Path::new("src"))?;
-
-println!("Renamed: {}", stats.files_renamed);
-println!("Emojis: {} files, {} changes",
-         stats.files_emoji_transformed,
-         stats.emoji_changes);
-println!("Whitespace: {} files, {} lines",
-         stats.files_whitespace_cleaned,
-         stats.whitespace_lines_cleaned);
-```
-
-## Testing Architecture
-
-### Test Organization
-
-```
-reformat-core/
-├── src/
-│   ├── case.rs          # 5 unit tests
-│   ├── converter.rs     # 7 unit tests
-│   ├── whitespace.rs    # 6 unit tests
-│   ├── emoji.rs         # 10 unit tests
-│   ├── rename.rs        # 11 unit tests
-│   └── combined.rs      # 5 unit tests
-└── tests/
-    └── library_integration.rs  # 11 integration tests
-
-reformat-cli/
-└── tests/
-    └── cli_integration.rs      # 34 CLI tests
-```
-
-**Total: 89 tests**
-- 44 unit tests (in module files)
-- 11 library integration tests
-- 34 CLI integration tests
-
-### Test Strategy
-
-**Unit Tests:**
-- Format pattern matching accuracy
-- Word splitting and joining logic
-- Prefix/suffix transformations
-- Identifier transformation pipeline
-- Edge cases (empty strings, special characters)
-
-**Integration Tests:**
-- File processing with temp directories
-- Directory traversal (recursive and non-recursive)
-- Dry-run mode validation
-- Extension filtering
-- Error handling
-
-**CLI Tests:**
-- Command parsing
-- Argument validation
-- Output format verification
-- Help and version commands
-- Exit codes
-
-## Implementation Details
-
-### Regex Patterns
-
-Each case format has a precise regex pattern:
-
-```rust
-CaseFormat::CamelCase => r"\b[a-z]+(?:[A-Z][a-z0-9]*)+\b"
-CaseFormat::PascalCase => r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b"
-CaseFormat::SnakeCase => r"\b[a-z]+(?:_[a-z0-9]+)+\b"
-CaseFormat::ScreamingSnakeCase => r"\b[A-Z]+(?:_[A-Z0-9]+)+\b"
-CaseFormat::KebabCase => r"\b[a-z]+(?:-[a-z0-9]+)+\b"
-CaseFormat::ScreamingKebabCase => r"\b[A-Z]+(?:-[A-Z0-9]+)+\b"
-```
-
-**Note:** Patterns require at least 2 segments to avoid false positives (e.g., `MyClass` matches PascalCase, but `My` doesn't).
-
-### Word Splitting Strategy
-
-**camelCase/PascalCase:**
-- Manual character iteration (Rust regex lacks lookahead/lookbehind)
-- Split on uppercase boundaries
-- Normalize all words to lowercase
-
-**snake_case/kebab-case variants:**
-- Regex-based splitting on `_` or `-`
-- Direct split using standard library methods
-
-### File Processing
-
-**Directory Traversal:**
-- Uses `walkdir` crate for recursive traversal
-- Single-level traversal uses `std::fs::read_dir`
-- Files sorted by depth (deepest first) for rename operations
-
-**File Filtering:**
-- Extension matching (case-insensitive)
-- Glob pattern matching (filename and relative path)
-- Hidden file and build directory skipping
-
-**Content Processing:**
-- Read entire file into memory
-- Apply regex replacements
-- Write back only if modified
-- Preserve file metadata
-
-### Error Handling
-
-Uses `anyhow::Result<T>` for flexible error propagation:
-
-```rust
 pub type Result<T> = anyhow::Result<T>;
 ```
 
-**Error Categories:**
-- Regex compilation errors
-- File I/O errors
-- Path manipulation errors
-- Glob pattern errors
+## Testing
 
-## Performance Characteristics
+### Test Organization
 
-### Optimization Strategies
+| Location | Type | Count |
+|----------|------|-------|
+| reformat-cli unit tests | CLI parsing | 6 |
+| reformat-cli integration tests | CLI end-to-end | 43 |
+| reformat-core unit tests | Module-level | 94 |
+| reformat-core integration tests | Library API | 11 |
+| Doc tests | Compilation | 1 |
+| **Total** | | **155** |
 
-1. **Single-Pass Processing** - `CombinedProcessor` traverses directory once
-2. **Lazy File Writing** - Only write files that were modified
-3. **Efficient Pattern Matching** - Compiled regex patterns reused
-4. **Minimal Memory Overhead** - Stream processing where possible
+### Test Strategy
 
-### Performance Metrics
+- **Unit tests** cover format patterns, word splitting, transformation pipelines, edge cases, change tracking, config parsing, reference scanning
+- **Integration tests** cover file processing with temp directories, directory traversal, dry-run mode, extension filtering, grouping operations, preset execution
+- **CLI tests** cover command parsing, argument validation, output format, help/version, exit codes
 
-Typical operation times (small-to-medium projects):
-- Case conversion: 4-10ms for 50-100 files
-- Whitespace cleaning: 2-5ms for 50-100 files
-- Emoji transformation: 3-8ms for 50-100 files
-- Combined processing: ~3x faster than separate operations
+## Dependencies
 
-**Example:**
-```
-run_convert(), Elapsed=4.089125ms
-```
+### reformat-core
+- `regex` + `aho-corasick` - Pattern matching
+- `walkdir` - Directory traversal
+- `glob` - File pattern matching
+- `anyhow` + `thiserror` - Error handling
+- `serde` + `serde_json` - Serialization (change records, config)
+- `chrono` - Timestamps
+- `log` - Logging facade
+- `rayon` (optional) - Parallel processing
 
-## Extension Points
-
-### Adding New Transformers
-
-1. Create new module in `reformat-core/src/`
-2. Define struct with options
-3. Implement transformation logic
-4. Add tests
-5. Export from `lib.rs`
-6. Add CLI command in `reformat-cli/src/main.rs`
-
-**Example Structure:**
-```rust
-// reformat-core/src/my_transformer.rs
-pub struct MyTransformer {
-    options: MyOptions,
-}
-
-pub struct MyOptions {
-    pub recursive: bool,
-    pub dry_run: bool,
-}
-
-impl MyTransformer {
-    pub fn new(options: MyOptions) -> Self {
-        MyTransformer { options }
-    }
-
-    pub fn transform_file(&self, path: &Path) -> Result<usize> {
-        // Implementation
-        Ok(changes)
-    }
-
-    pub fn process(&self, path: &Path) -> Result<(usize, usize)> {
-        // Directory traversal and file processing
-        Ok((files_processed, total_changes))
-    }
-}
-```
-
-### Extending CombinedProcessor
-
-To add new transformations to the default pipeline:
-
-1. Add transformer to `CombinedProcessor` struct
-2. Update `CombinedStats` with new metrics
-3. Add transformation step in `process_single_file()`
-4. Update tests
-
-## Future Vision
-
-The following features are planned but not yet implemented:
-
-### Planned Architecture Enhancements
-
-**1. Trait-Based Architecture**
-- Abstract `Transformer` trait for polymorphism
-- `Filter` trait for file set refinement
-- `Analyzer` trait for code metrics
-- Pipeline builder pattern for composition
-
-**2. Advanced Features**
-- AST-based transformations using Tree-sitter
-- Language-specific semantic transformations
-- Plugin system with dynamic loading
-- YAML-based configuration files
-- Interactive CLI mode
-
-**3. Performance Improvements**
-- Parallel file processing with rayon
-- AST caching for repeated operations
-- Incremental processing (skip unchanged files)
-
-**4. Developer Tools**
-- Transaction/rollback system
-- Git integration (auto-commit, branch creation)
-- Transformation preview with diffs
-- Complexity and metrics analysis
-
-### Migration Strategy
-
-The current simple struct-based design can evolve to trait-based architecture without breaking changes:
-
-1. Define core traits alongside existing structs
-2. Implement traits for existing transformers
-3. Add trait-based pipeline builder
-4. Maintain existing API for backwards compatibility
-5. Document migration path for users
+### reformat-cli
+- `reformat-core` - Core library
+- `reformat-plugins` - Plugin system
+- `clap` - CLI argument parsing
+- `simplelog` - Logging implementation
+- `indicatif` - Progress indicators
+- `logging_timer` - Operation timing
 
 ## Build and Release
 
-### Build Commands
-
 ```bash
-# Build entire workspace
-cargo build --workspace
-
-# Build specific crates
-cargo build -p reformat-core     # Library only
-cargo build -p reformat          # CLI binary
-
-# Release build
-cargo build --release -p reformat
-
-# Run tests
-cargo test --workspace        # All tests
-cargo test -p reformat-core      # Core tests only
-cargo test -p reformat           # CLI tests only
+cargo build --workspace          # Build all
+cargo build --release -p reformat  # Release binary
+cargo test --workspace           # Run all 155 tests
+cargo install --path reformat-cli  # Install binary
+cargo doc --workspace --open     # Generate docs
 ```
 
 ### Release Profile
@@ -714,58 +509,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 ```
-
-### Installation
-
-```bash
-# Install from workspace
-cargo install --path reformat-cli
-
-# Binary location
-./target/release/reformat
-```
-
-## Documentation
-
-### Documentation Structure
-
-```
-docs/
-├── README.md              # User guide and quick start
-├── ARCHITECTURE.md        # This file - architecture documentation
-├── CLAUDE.md              # Project context for Claude Code
-├── CHANGELOG.md           # Version history and changes
-└── LICENSE                # License information
-```
-
-### Inline Documentation
-
-All public APIs have rustdoc comments:
-- Module-level documentation in each `.rs` file
-- Struct and enum documentation
-- Method documentation with examples
-- Example usage in integration tests
-
-Generate documentation:
-```bash
-cargo doc --workspace --open
-```
-
-## References
-
-### Dependencies
-
-- [regex](https://docs.rs/regex/) - Regular expressions
-- [walkdir](https://docs.rs/walkdir/) - Directory traversal
-- [glob](https://docs.rs/glob/) - Pattern matching
-- [anyhow](https://docs.rs/anyhow/) - Error handling
-- [clap](https://docs.rs/clap/) - CLI parsing
-- [simplelog](https://docs.rs/simplelog/) - Logging
-- [indicatif](https://docs.rs/indicatif/) - Progress indicators
-
-### Related Projects
-
-- [Comby](https://comby.dev/) - Structural code search and replace
-- [Semgrep](https://semgrep.dev/) - Semantic code analysis
-- [Codemod](https://github.com/facebook/codemod) - Facebook's transformation framework
-- [jscodeshift](https://github.com/facebook/jscodeshift) - JavaScript codemods
