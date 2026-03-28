@@ -4,32 +4,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_binary_path() -> std::path::PathBuf {
-    // Get the path to the compiled binary using cargo's test infrastructure
-    let mut path = std::env::current_exe()
-        .expect("Failed to get current executable path")
-        .parent()
-        .expect("Failed to get parent directory")
-        .parent()
-        .expect("Failed to get parent directory")
-        .to_path_buf();
-
-    // The binary will be in the same directory as the test executable
-    path.push("reformat");
-
-    if !path.exists() {
-        // Fallback: try to use cargo to build and get the path
-        let _output = Command::new("cargo")
-            .args(&["build", "-p", "reformat", "--message-format=json"])
-            .output()
-            .expect("Failed to build reformat");
-
-        // Parse the JSON to find the binary path (simplified - just return the default path)
-        std::env::current_dir()
-            .expect("Failed to get current directory")
-            .join("target/debug/reformat")
-    } else {
-        path
-    }
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_reformat"))
 }
 
 #[test]
