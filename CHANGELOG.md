@@ -7,8 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.5]
 
+### Added
+
+#### Presets (`-p` / `--preset`)
+- **New preset system** for defining reusable transformation pipelines in `reformat.json`
+  - Define named presets with an ordered list of steps: `rename`, `emojis`, `clean`, `convert`, `group`
+  - Per-step configuration overrides (e.g., custom case transforms, file extensions, separators)
+  - Run with `reformat -p <preset-name> <path>`
+  - Dry-run support via `-d` flag applies to all steps in the preset
+
+- **Configuration file format** (`reformat.json`):
+  ```json
+  {
+    "code": {
+      "steps": ["rename", "emojis", "clean"],
+      "rename": { "case_transform": "lowercase" },
+      "emojis": { "replace_task_emojis": true, "remove_other_emojis": false }
+    },
+    "templates": {
+      "steps": ["group", "clean"],
+      "group": { "separator": "_", "min_count": 3, "strip_prefix": true }
+    }
+  }
+  ```
+
+- **Per-step configuration options**:
+  - `rename`: `case_transform`, `space_replace`, `recursive`, `include_symlinks`
+  - `emojis`: `replace_task_emojis`, `remove_other_emojis`, `file_extensions`, `recursive`
+  - `clean`: `remove_trailing`, `file_extensions`, `recursive`
+  - `convert`: `from_format`, `to_format`, `file_extensions`, `recursive`, `prefix`, `suffix`, `glob`, `word_filter`
+  - `group`: `separator`, `min_count`, `strip_prefix`, `from_suffix`, `recursive`
+
+- **Step validation**: Unknown step names are rejected with a clear error listing valid steps
+
+#### New Core Module
+- **Config module** (`reformat-core/src/config.rs`)
+  - `ReformatConfig` type (preset name to `Preset` mapping)
+  - `Preset` struct with ordered steps and optional per-step config
+  - Per-step config structs: `RenameConfig`, `EmojiConfig`, `CleanConfig`, `ConvertConfig`, `GroupConfig`
+  - `validate_steps()` for rejecting unknown step names
+  - Case format parsing helpers for convert config
+
+#### New CLI Module
+- **Config loader** (`reformat-cli/src/config.rs`)
+  - `load_config()` / `load_config_from()` for reading `reformat.json`
+  - `get_preset()` for looking up and validating a named preset
+
 ### Fixed
 - Simplified CLI integration test binary path resolution using `env!("CARGO_BIN_EXE_reformat")` instead of fragile manual path traversal with fallback build logic
+
+### Testing
+- Added 7 new unit tests for core config module (deserialization, validation, case format parsing)
+- Added 6 new CLI unit tests for config loading and preset lookup
+- Added 6 new CLI integration tests for preset execution (single step, multi-step, dry-run, missing config, unknown preset)
+- All 155 tests passing
 
 ## [0.1.4]
 

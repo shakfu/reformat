@@ -55,6 +55,14 @@ Organized as a Cargo workspace:
 - **Interactive fix workflow**: Review and apply fixes for broken references
 - Change tracking with `changes.json` and `fixes.json` output files
 
+### Presets
+- Define reusable transformation pipelines in a `reformat.json` config file
+- Run named presets with `reformat -p <preset-name> <path>`
+- Chain any combination of steps: `rename`, `emojis`, `clean`, `convert`, `group`
+- Per-step configuration overrides (case transforms, file extensions, separators, etc.)
+- Dry-run mode applies to all steps in the preset
+- Step validation with clear error messages for unknown steps
+
 ### Logging & UI
 - Multi-level verbosity control (`-v`, `-vv`, `-vvv`)
 - Quiet mode for silent operation (`-q`)
@@ -389,6 +397,62 @@ reformat group --strip-prefix --no-interactive templates/
 - `changes.json` - Record of all file operations (for auditing)
 - `fixes.json` - Proposed reference fixes (review before applying)
 
+### Presets
+
+Define reusable transformation pipelines in a `reformat.json` file in your project root:
+
+```json
+{
+  "code": {
+    "steps": ["rename", "emojis", "clean"],
+    "rename": {
+      "case_transform": "lowercase",
+      "space_replace": "hyphen"
+    },
+    "emojis": {
+      "replace_task_emojis": true,
+      "remove_other_emojis": false,
+      "file_extensions": [".md", ".txt"]
+    },
+    "clean": {
+      "remove_trailing": true,
+      "file_extensions": [".rs", ".py"]
+    }
+  },
+  "templates": {
+    "steps": ["group", "clean"],
+    "group": {
+      "separator": "_",
+      "min_count": 3,
+      "strip_prefix": true
+    }
+  }
+}
+```
+
+Run a preset:
+```bash
+reformat -p code src/
+
+# Dry-run to preview changes
+reformat -p code -d src/
+
+# Run a different preset
+reformat -p templates web/templates/
+```
+
+**Available step configuration options:**
+
+| Step | Options |
+|------|---------|
+| `rename` | `case_transform` (lowercase/uppercase/capitalize), `space_replace` (underscore/hyphen), `recursive`, `include_symlinks` |
+| `emojis` | `replace_task_emojis`, `remove_other_emojis`, `file_extensions`, `recursive` |
+| `clean` | `remove_trailing`, `file_extensions`, `recursive` |
+| `convert` | `from_format`, `to_format`, `file_extensions`, `recursive`, `prefix`, `suffix`, `glob`, `word_filter` |
+| `group` | `separator`, `min_count`, `strip_prefix`, `from_suffix`, `recursive` |
+
+Steps without explicit configuration use sensible defaults.
+
 ### Logging and Debugging
 
 Control output verbosity:
@@ -566,6 +630,44 @@ Example `fixes.json`:
     }
   ]
 }
+```
+
+### Preset Examples
+
+Run a multi-step cleanup preset:
+```bash
+# Define in reformat.json, then run:
+reformat -p code src/
+
+# Output:
+#   rename: 3 file(s) renamed
+#   emojis: 2 file(s), 5 change(s)
+#   clean: 4 file(s), 12 line(s) cleaned
+# Preset 'code' complete.
+```
+
+Preview preset changes without modifying files:
+```bash
+reformat -p code -d src/
+```
+
+Case conversion preset:
+```json
+{
+  "snake-to-camel": {
+    "steps": ["convert"],
+    "convert": {
+      "from_format": "snake",
+      "to_format": "camel",
+      "file_extensions": [".py"],
+      "recursive": true
+    }
+  }
+}
+```
+
+```bash
+reformat -p snake-to-camel src/
 ```
 
 ## License
