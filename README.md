@@ -1,75 +1,93 @@
 # reformat
 
-A modular code transformation framework for applying code transformations to code in a set of source code files.
-
-Organized as a Cargo workspace:
-- **reformat-core**: Core transformation library
-- **reformat-cli**: Command-line interface
-- **reformat-plugins**: Plugin system (foundation)
+A modular code transformation framework. Each transformer handles one
+concern -- renaming files, normalising whitespace, converting identifier case,
+etc. -- and the pipeline system lets you compose them into multi-step workflows
+that run in a single invocation.
 
 ## Features
 
-### Default Command (Quick Processing)
-- Run all common transformations in a single pass with `reformat <path>`
-- Combines three operations efficiently:
-  1. Rename files to lowercase
-  2. Transform task emojis to text alternatives
-  3. Remove trailing whitespace
-- **3x faster** than running individual commands separately
-- Perfect for quick project cleanup: `reformat -r src/`
+### Modular transformers
 
-### Case Format Conversion
-- Convert between 6 case formats: camelCase, PascalCase, snake_case, SCREAMING_SNAKE_CASE, kebab-case, and SCREAMING-KEBAB-CASE
-- Process single files or entire directories (with recursive option)
-- Dry-run mode to preview changes
-- Filter files by glob patterns
-- Filter which words to convert using regex patterns
-- Add prefix/suffix to converted identifiers
-- Support for multiple file extensions (.c, .h, .py, .md, .js, .ts, .java, .cpp, .hpp)
+Every transformation is an independent module with its own options struct,
+sensible defaults, and a consistent interface (`process(path) -> Result`).
+Transformers can be used standalone via CLI subcommands, composed into
+pipelines, or called directly as a Rust library from `reformat-core`.
 
-### Whitespace Cleaning
-- Remove trailing whitespace from files
-- Preserve line endings and file structure
-- Recursive directory processing
-- Extension filtering with sensible defaults
-- Dry-run mode to preview changes
-- Automatically skips hidden files and build directories
+| Transformer | CLI subcommand | What it does |
+|---|---|---|
+| `FileRenamer` | `rename_files` | Case transforms, prefix/suffix operations, timestamps on filenames |
+| `CaseConverter` | `convert` | Convert identifiers between 6 case formats (camel, pascal, snake, screaming snake, kebab, screaming kebab) |
+| `WhitespaceCleaner` | `clean` | Strip trailing whitespace while preserving line endings |
+| `EmojiTransformer` | `emojis` | Replace task/status emojis with text alternatives, remove decorative emojis |
+| `FileGrouper` | `group` | Organise files by common prefix into subdirectories, detect and fix broken references |
+| `EndingsNormalizer` | `endings` | Normalise line endings to LF, CRLF, or CR (skips binary files automatically) |
+| `IndentNormalizer` | `indent` | Convert between tabs and spaces with configurable width, tab-stop-aware |
+| `ContentReplacer` | `replace` | Regex find-and-replace with capture group support, multiple sequential patterns |
+| `HeaderManager` | `header` | Insert or update file headers (license, copyright) with year templating |
 
-### Emoji Transformation
-- Replace task completion emojis with text alternatives (✅ → [x], ☐ → [ ], etc.)
-- Replace status indicator emojis (🟡 → [yellow], 🟢 → [green], 🔴 → [red])
-- Remove non-task emojis from code and documentation
-- Smart replacements for common task tracking symbols
-- Configurable behavior (replace task emojis, remove others, or both)
-- Support for markdown, documentation, and source files
+All transformers share common behaviours: recursive directory traversal,
+file extension filtering, dry-run mode, and automatic skipping of hidden files
+and build directories (`.git`, `node_modules`, `target`, `__pycache__`, etc.).
 
-### File Grouping
-- Organize files by common prefix into subdirectories
-- Automatically detect file prefixes based on separator character
-- Optional prefix stripping from filenames after moving
-- **Suffix-based splitting** (`--from-suffix`): Split at the LAST separator for multi-part prefixes
-- Preview mode to see what groups would be created
-- Configurable minimum file count for group creation
-- Recursive processing for nested directories
-- **Broken reference detection**: Automatically scan codebase for references to moved files
-- **Interactive fix workflow**: Review and apply fixes for broken references
-- Change tracking with `changes.json` and `fixes.json` output files
+### Pipelines: presets and jobs
 
-### Presets
-- Define reusable transformation pipelines in a `reformat.json` config file
-- Run named presets with `reformat -p <preset-name> <path>`
-- Chain any combination of steps: `rename`, `emojis`, `clean`, `convert`, `group`
-- Per-step configuration overrides (case transforms, file extensions, separators, etc.)
-- Dry-run mode applies to all steps in the preset
-- Step validation with clear error messages for unknown steps
+Transformers become more useful when composed. The pipeline system chains any
+combination of the above steps and runs them in order on the same path.
 
-### Logging & UI
-- Multi-level verbosity control (`-v`, `-vv`, `-vvv`)
-- Quiet mode for silent operation (`-q`)
-- File logging for debugging (`--log-file`)
-- Progress spinners with indicatif
-- Automatic operation timing
-- Color-coded console output
+There are two ways to define a pipeline, reflecting two different needs:
+
+- **Presets** (`-p`) -- Reusable, named pipelines stored in `reformat.json` at the project root. Version-controlled, shared across a team, run repeatedly.
+- **Jobs** (`--job`) -- Ad-hoc, throwaway pipelines loaded from any file or stdin. No project config needed. Ideal for one-off migrations, scripted CI transforms, or quick multi-pattern replacements.
+
+Both use the same JSON format (a `steps` array plus per-step config) and the
+same execution engine. The only difference is where they are stored.
+
+```json
+{
+  "steps": ["endings", "indent", "clean", "header"],
+  "endings": { "style": "lf" },
+  "indent": { "style": "spaces", "width": 4 },
+  "header": {
+    "text": "// Copyright {year} MyOrg. All rights reserved.",
+    "update_year": true,
+    "file_extensions": [".rs", ".go"]
+  }
+}
+```
+
+```bash
+# As a reusable preset (stored in reformat.json under a name):
+reformat -p normalize src/
+
+# As a throwaway job (from a file):
+reformat --job normalize.json src/
+
+# As a throwaway job (piped from stdin):
+cat normalize.json | reformat --job - src/
+```
+
+### Quick processing (default command)
+
+For the common case of cleaning up a directory, `reformat <path>` runs three
+transformations in a single optimised pass -- rename to lowercase, replace task
+emojis, strip trailing whitespace -- without needing a config file.
+
+### Library-first design
+
+The project is organised as a Cargo workspace:
+
+- **reformat-core** -- All transformation logic. Every struct and option type
+  is a public API. Use this crate directly if you want programmatic access.
+- **reformat-cli** -- Thin CLI wrapper using clap. Parses arguments, loads
+  config, calls into core.
+- **reformat-plugins** -- Plugin system foundation (not yet active).
+
+### Observability
+
+- Multi-level verbosity (`-v`, `-vv`, `-vvv`), quiet mode (`-q`), file logging (`--log-file`)
+- Progress spinners, automatic operation timing, colour-coded output
+- Dry-run mode on every transformer and every pipeline step
 
 ## Installation
 
@@ -99,7 +117,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reformat-core = "0.1.4"
+reformat-core = "0.1.6"
 ```
 
 ### Case Conversion
@@ -161,6 +179,81 @@ println!("Whitespace cleaned: {} files ({} lines)",
          stats.files_whitespace_cleaned, stats.whitespace_lines_cleaned);
 ```
 
+### Line Ending Normalization
+
+```rust
+use reformat_core::{EndingsNormalizer, EndingsOptions, LineEnding};
+
+let options = EndingsOptions {
+    style: LineEnding::Lf,
+    recursive: true,
+    dry_run: false,
+    ..Default::default()
+};
+
+let normalizer = EndingsNormalizer::new(options);
+let (files, endings) = normalizer.process(std::path::Path::new("src"))?;
+println!("Normalized {} endings in {} files", endings, files);
+```
+
+### Indentation Normalization
+
+```rust
+use reformat_core::{IndentNormalizer, IndentOptions, IndentStyle};
+
+let options = IndentOptions {
+    style: IndentStyle::Spaces,
+    width: 4,
+    recursive: true,
+    dry_run: false,
+    ..Default::default()
+};
+
+let normalizer = IndentNormalizer::new(options);
+let (files, lines) = normalizer.process(std::path::Path::new("src"))?;
+println!("Normalized {} lines in {} files", lines, files);
+```
+
+### Regex Find-and-Replace
+
+```rust
+use reformat_core::{ContentReplacer, ReplaceOptions, ReplacePattern};
+
+let options = ReplaceOptions {
+    patterns: vec![
+        ReplacePattern {
+            find: r"old_api\(".to_string(),
+            replace: "new_api(".to_string(),
+        },
+    ],
+    recursive: true,
+    dry_run: false,
+    ..Default::default()
+};
+
+let replacer = ContentReplacer::new(options)?;
+let (files, replacements) = replacer.process(std::path::Path::new("src"))?;
+println!("Made {} replacements in {} files", replacements, files);
+```
+
+### File Header Management
+
+```rust
+use reformat_core::{HeaderManager, HeaderOptions};
+
+let options = HeaderOptions {
+    text: "// Copyright {year} MyOrg. All rights reserved.\n// SPDX-License-Identifier: MIT".to_string(),
+    update_year: true,
+    recursive: true,
+    dry_run: false,
+    ..Default::default()
+};
+
+let manager = HeaderManager::new(options)?;
+let (files, _) = manager.process(std::path::Path::new("src"))?;
+println!("Updated headers in {} files", files);
+```
+
 ### File Grouping
 
 ```rust
@@ -198,11 +291,13 @@ reformat -d <path>
 ```
 
 **What it does:**
+
 1. Renames files to lowercase
 2. Transforms task emojis: ✅ → [x], ☐ → [ ]
 3. Removes trailing whitespace
 
 **Example:**
+
 ```bash
 # Clean up an entire project directory
 reformat -r src/
@@ -215,7 +310,8 @@ reformat README.md
 ```
 
 **Output:**
-```
+
+```text
 Renamed '/tmp/TestFile.txt' -> '/tmp/testfile.txt'
 Transformed emojis in '/tmp/testfile.txt'
 Cleaned 2 lines in '/tmp/testfile.txt'
@@ -230,31 +326,37 @@ Processed files:
 ### Case Conversion
 
 Basic conversion (using subcommand):
+
 ```bash
 reformat convert --from-camel --to-snake myfile.py
 ```
 
 Recursive directory conversion:
+
 ```bash
 reformat convert --from-snake --to-camel -r src/
 ```
 
 Dry run (preview changes):
+
 ```bash
 reformat convert --from-camel --to-kebab --dry-run mydir/
 ```
 
 Add prefix to all converted identifiers:
+
 ```bash
 reformat convert --from-camel --to-snake --prefix "old_" myfile.py
 ```
 
 Filter files by pattern:
+
 ```bash
 reformat convert --from-camel --to-snake -r --glob "*test*.py" src/
 ```
 
 Only convert specific identifiers:
+
 ```bash
 reformat convert --from-camel --to-snake --word-filter "^get.*" src/
 ```
@@ -262,21 +364,25 @@ reformat convert --from-camel --to-snake --word-filter "^get.*" src/
 ### Whitespace Cleaning
 
 Clean all default file types in current directory:
+
 ```bash
 reformat clean .
 ```
 
 Clean with dry-run to preview changes:
+
 ```bash
 reformat clean --dry-run src/
 ```
 
 Clean only specific file types:
+
 ```bash
 reformat clean -e .py -e .rs src/
 ```
 
 Clean a single file:
+
 ```bash
 reformat clean myfile.py
 ```
@@ -284,21 +390,25 @@ reformat clean myfile.py
 ### Emoji Transformation
 
 Replace task emojis with text in markdown files:
+
 ```bash
 reformat emojis docs/
 ```
 
 Process with dry-run to preview changes:
+
 ```bash
 reformat emojis --dry-run README.md
 ```
 
 Only replace task emojis, keep other emojis:
+
 ```bash
 reformat emojis --replace-task --no-remove-other docs/
 ```
 
 Process specific file types:
+
 ```bash
 reformat emojis -e .md -e .txt project/
 ```
@@ -306,6 +416,7 @@ reformat emojis -e .md -e .txt project/
 ### File Grouping
 
 Organize files by common prefix into subdirectories:
+
 ```bash
 # Preview what groups would be created
 reformat group --preview templates/
@@ -333,7 +444,8 @@ reformat group -m 3 templates/
 ```
 
 Example transformation with `--strip-prefix` (splits at FIRST separator):
-```
+
+```text
 Before:                          After:
 templates/                       templates/
 ├── wbs_create.tmpl             ├── wbs/
@@ -347,7 +459,8 @@ templates/                       templates/
 ```
 
 Example transformation with `--from-suffix` (splits at LAST separator):
-```
+
+```text
 Before:                                    After:
 templates/                                 templates/
 ├── activity_relationships_list.tmpl      ├── activity_relationships/
@@ -394,8 +507,83 @@ reformat group --strip-prefix --no-interactive templates/
 ```
 
 **Generated files:**
+
 - `changes.json` - Record of all file operations (for auditing)
 - `fixes.json` - Proposed reference fixes (review before applying)
+
+### Line Ending Normalization
+
+Normalize line endings across files:
+
+```bash
+# Convert to Unix line endings (LF) - default
+reformat endings src/
+
+# Convert to Windows line endings (CRLF)
+reformat endings --style crlf src/
+
+# Preview changes
+reformat endings --dry-run src/
+
+# Process specific file types
+reformat endings -e .py -e .rs src/
+```
+
+### Indentation Normalization
+
+Convert between tabs and spaces:
+
+```bash
+# Convert tabs to spaces (4-wide, default)
+reformat indent src/
+
+# Convert tabs to 2-space indentation
+reformat indent --style spaces --width 2 src/
+
+# Convert spaces to tabs
+reformat indent --style tabs --width 4 src/
+
+# Preview changes
+reformat indent --dry-run src/
+```
+
+### Regex Find-and-Replace
+
+Apply regex patterns across files:
+
+```bash
+# Simple text replacement
+reformat replace --find "old_name" --replace-with "new_name" src/
+
+# Regex with capture groups
+reformat replace --find "func\((\w+), (\w+)\)" --replace-with "func(\$2, \$1)" src/
+
+# Dry run
+reformat replace --find "TODO" --replace-with "FIXME" --dry-run src/
+
+# Filter by extension
+reformat replace --find "2024" --replace-with "2025" -e .py src/
+```
+
+For multiple patterns, use a preset (see Presets section below).
+
+### File Header Management
+
+Insert or update file headers:
+
+```bash
+# Insert a license header
+reformat header --text "// Copyright 2025 MyOrg\n// SPDX-License-Identifier: MIT" src/
+
+# Insert header with automatic year
+reformat header --text "// Copyright {year} MyOrg" --update-year src/
+
+# Preview changes
+reformat header --text "// Header" --dry-run src/
+
+# Process specific file types
+reformat header --text "# License" -e .py src/
+```
 
 ### Presets
 
@@ -431,6 +619,7 @@ Define reusable transformation pipelines in a `reformat.json` file in your proje
 ```
 
 Run a preset:
+
 ```bash
 reformat -p code src/
 
@@ -450,12 +639,91 @@ reformat -p templates web/templates/
 | `clean` | `remove_trailing`, `file_extensions`, `recursive` |
 | `convert` | `from_format`, `to_format`, `file_extensions`, `recursive`, `prefix`, `suffix`, `glob`, `word_filter` |
 | `group` | `separator`, `min_count`, `strip_prefix`, `from_suffix`, `recursive` |
+| `endings` | `style` (lf/crlf/cr), `file_extensions`, `recursive` |
+| `indent` | `style` (spaces/tabs), `width`, `file_extensions`, `recursive` |
+| `replace` | `patterns` (array of `{find, replace}`), `file_extensions`, `recursive` |
+| `header` | `text`, `update_year`, `file_extensions`, `recursive` |
 
 Steps without explicit configuration use sensible defaults.
+
+**Example preset using new transformers:**
+
+```json
+{
+  "normalize": {
+    "steps": ["endings", "indent", "clean", "header"],
+    "endings": { "style": "lf" },
+    "indent": { "style": "spaces", "width": 4 },
+    "header": {
+      "text": "// Copyright {year} MyOrg. All rights reserved.\n// SPDX-License-Identifier: MIT",
+      "update_year": true,
+      "file_extensions": [".rs", ".go", ".js"]
+    }
+  },
+  "migrate-api": {
+    "steps": ["replace"],
+    "replace": {
+      "patterns": [
+        { "find": "old_api\\(", "replace": "new_api(" },
+        { "find": "Copyright 2024", "replace": "Copyright 2025" }
+      ],
+      "file_extensions": [".rs", ".py"]
+    }
+  }
+}
+```
+
+### Jobs
+
+Jobs are ad-hoc transformation pipelines for one-off tasks. A job file has the same
+format as a single preset -- just a JSON object with `steps` and per-step config --
+but is loaded from an arbitrary file (or stdin) instead of your project's `reformat.json`.
+
+Run a job from a file:
+
+```bash
+reformat --job migrate.json src/
+```
+
+Run a job from stdin:
+
+```bash
+echo '{"steps":["clean"]}' | reformat --job - src/
+```
+
+Example job file for a multi-pattern replacement:
+
+```json
+{
+  "steps": ["replace", "clean"],
+  "replace": {
+    "patterns": [
+      {"find": "old_api\\(", "replace": "new_api("},
+      {"find": "Copyright 2024", "replace": "Copyright 2025"}
+    ],
+    "file_extensions": [".rs", ".py"]
+  }
+}
+```
+
+Jobs support dry-run mode:
+
+```bash
+reformat --job migrate.json --dry-run src/
+```
+
+**When to use presets vs. jobs:**
+
+| | Presets (`-p`) | Jobs (`--job`) |
+|---|---|---|
+| Source | `reformat.json` in project root | Any file or stdin |
+| Lifecycle | Reusable, version-controlled | Throwaway, ad-hoc |
+| Use case | Standard project workflows | One-off migrations, scripted transforms |
 
 ### Logging and Debugging
 
 Control output verbosity:
+
 ```bash
 # Info level output (-v)
 reformat -v convert --from-camel --to-snake src/
@@ -471,7 +739,8 @@ reformat --log-file debug.log -v convert --from-camel --to-snake src/
 ```
 
 Output example with `-v`:
-```
+
+```text
 2025-10-10T00:15:08.927Z [INFO] Converting from CamelCase to SnakeCase
 2025-10-10T00:15:08.927Z [INFO] Target path: /tmp/test.py
 2025-10-10T00:15:08.927Z [INFO] Recursive: false, Dry run: false
@@ -494,16 +763,19 @@ Converted '/tmp/test.py'
 ### Case Conversion Examples
 
 Convert Python file from camelCase to snake_case:
+
 ```bash
 reformat convert --from-camel --to-snake main.py
 ```
 
 Convert C++ project from snake_case to PascalCase:
+
 ```bash
 reformat convert --from-snake --to-pascal -r -e .cpp -e .hpp src/
 ```
 
 Preview converting JavaScript getters to snake_case:
+
 ```bash
 reformat convert --from-camel --to-snake --word-filter "^get.*" -d src/
 ```
@@ -511,16 +783,19 @@ reformat convert --from-camel --to-snake --word-filter "^get.*" -d src/
 ### Whitespace Cleaning Examples
 
 Clean trailing whitespace from entire project:
+
 ```bash
 reformat clean -r .
 ```
 
 Clean only Python files in src directory:
+
 ```bash
 reformat clean -e .py src/
 ```
 
 Preview what would be cleaned without making changes:
+
 ```bash
 reformat clean --dry-run .
 ```
@@ -528,13 +803,16 @@ reformat clean --dry-run .
 ### Emoji Transformation Examples
 
 Transform task emojis in documentation:
+
 ```bash
 reformat emojis -r docs/
 ```
 
 Example transformation:
+
 ```markdown
 Before:
+
 - Task done ✅
 - Task pending ☐
 - Warning ⚠ issue
@@ -543,6 +821,7 @@ Before:
 - 🔴 Blocked
 
 After:
+
 - Task done [x]
 - Task pending [ ]
 - Warning [!] issue
@@ -552,6 +831,7 @@ After:
 ```
 
 Process only markdown files:
+
 ```bash
 reformat emojis -e .md README.md
 ```
@@ -559,23 +839,27 @@ reformat emojis -e .md README.md
 ### File Grouping Examples
 
 Organize template files by prefix (split at first separator):
+
 ```bash
 reformat group --strip-prefix web/templates/
 ```
 
 Organize files with multi-part prefixes (split at last separator):
+
 ```bash
 # activity_relationships_list.tmpl -> activity_relationships/list.tmpl
 reformat group --from-suffix web/templates/
 ```
 
 Preview groups without making changes:
+
 ```bash
 reformat group --preview web/templates/
 ```
 
 Example output:
-```
+
+```text
 Found 2 potential group(s):
 
   wbs (3 files):
@@ -589,21 +873,25 @@ Found 2 potential group(s):
 ```
 
 Group files with hyphen separator:
+
 ```bash
 reformat group -s '-' --strip-prefix components/
 ```
 
 Recursively organize nested directories:
+
 ```bash
 reformat group -r --strip-prefix src/
 ```
 
 Group files and automatically scan for broken references:
+
 ```bash
 reformat group --strip-prefix --scope src templates/
 ```
 
 Example `changes.json`:
+
 ```json
 {
   "operation": "group",
@@ -617,6 +905,7 @@ Example `changes.json`:
 ```
 
 Example `fixes.json`:
+
 ```json
 {
   "generated_from": "changes.json",
@@ -632,9 +921,72 @@ Example `fixes.json`:
 }
 ```
 
+### Line Ending Normalization Examples
+
+Normalize a cross-platform project to Unix endings:
+
+```bash
+reformat endings -r src/
+```
+
+Convert to Windows line endings for distribution:
+
+```bash
+reformat endings --style crlf -r dist/
+```
+
+### Indentation Normalization Examples
+
+Standardize a project to 4-space indentation:
+
+```bash
+reformat indent -r src/
+```
+
+Convert to 2-space indentation for JavaScript:
+
+```bash
+reformat indent --width 2 -e .js -e .ts src/
+```
+
+Convert to tabs:
+
+```bash
+reformat indent --style tabs --width 4 -e .go src/
+```
+
+### Regex Find-and-Replace Examples
+
+Update copyright year across all files:
+
+```bash
+reformat replace --find "Copyright 2024" --replace-with "Copyright 2025" -r .
+```
+
+Swap function argument order using capture groups:
+
+```bash
+reformat replace --find "swap\((\w+), (\w+)\)" --replace-with "swap(\$2, \$1)" src/
+```
+
+### File Header Examples
+
+Add MIT license header to all Rust files:
+
+```bash
+reformat header -t "// Copyright {year} MyOrg\n// SPDX-License-Identifier: MIT" --update-year -e .rs src/
+```
+
+Ensure all Python files have a header (preserves shebang):
+
+```bash
+reformat header -t "# Copyright {year} MyOrg" --update-year -e .py src/
+```
+
 ### Preset Examples
 
 Run a multi-step cleanup preset:
+
 ```bash
 # Define in reformat.json, then run:
 reformat -p code src/
@@ -647,11 +999,13 @@ reformat -p code src/
 ```
 
 Preview preset changes without modifying files:
+
 ```bash
 reformat -p code -d src/
 ```
 
 Case conversion preset:
+
 ```json
 {
   "snake-to-camel": {

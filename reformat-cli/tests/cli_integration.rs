@@ -1,7 +1,8 @@
 //! Integration tests for CLI functionality
 
 use std::fs;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn get_binary_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_reformat"))
@@ -962,14 +963,18 @@ fn test_preset_clean_step() {
         .output()
         .expect("Failed to execute reformat");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let content = fs::read_to_string(&test_file).unwrap();
     assert_eq!(content, "hello\nworld\n");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("clean:"));
-    assert!(stdout.contains("Preset 'tidy' complete."));
+    assert!(stdout.contains("Pipeline 'tidy' complete."));
 
     fs::remove_dir_all(&test_dir).unwrap();
 }
@@ -996,13 +1001,21 @@ fn test_preset_rename_step() {
         .output()
         .expect("Failed to execute reformat");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // On case-insensitive filesystems, check actual filename
     let entries: Vec<_> = fs::read_dir(&test_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_str().map_or(false, |n| n.ends_with(".txt")))
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .map_or(false, |n| n.ends_with(".txt"))
+        })
         .collect();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].file_name().to_str().unwrap(), "myfile.txt");
@@ -1032,7 +1045,11 @@ fn test_preset_multi_step() {
         .output()
         .expect("Failed to execute reformat");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // File should be renamed and cleaned
     let renamed = test_dir.join("mycode.py");
@@ -1075,7 +1092,11 @@ fn test_preset_dry_run_override() {
         .output()
         .expect("Failed to execute reformat");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // File should be unchanged in dry-run
     let content = fs::read_to_string(&test_file).unwrap();
@@ -1129,4 +1150,237 @@ fn test_preset_unknown_preset_name() {
     assert!(stderr.contains("preset 'nonexistent' not found"));
 
     fs::remove_dir_all(&test_dir).unwrap();
+}
+
+// ==================== Job tests ====================
+
+#[test]
+fn test_job_from_file() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_file");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let job_file = test_dir.join("job.json");
+    fs::write(&job_file, r#"{"steps": ["clean"]}"#).unwrap();
+
+    let test_file = test_dir.join("test.txt");
+    fs::write(&test_file, "hello   \nworld  \n").unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["--job"])
+        .arg(&job_file)
+        .arg(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert_eq!(content, "hello\nworld\n");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Pipeline"));
+    assert!(stdout.contains("complete."));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_from_stdin() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_stdin");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let test_file = test_dir.join("test.txt");
+    fs::write(&test_file, "hello   \n").unwrap();
+
+    let mut child = Command::new(get_binary_path())
+        .args(&["--job", "-"])
+        .arg(&test_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn reformat");
+
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin.write_all(b"{\"steps\": [\"clean\"]}").unwrap();
+    }
+
+    let output = child.wait_with_output().expect("Failed to wait on child");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert_eq!(content, "hello\n");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Pipeline 'stdin' complete."));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_multi_step() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_multi");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let job_file = test_dir.join("job.json");
+    fs::write(
+        &job_file,
+        r#"{
+            "steps": ["replace", "clean"],
+            "replace": {
+                "patterns": [
+                    {"find": "foo", "replace": "bar"}
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let test_file = test_dir.join("test.txt");
+    fs::write(&test_file, "foo   \nfoo baz  \n").unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["--job"])
+        .arg(&job_file)
+        .arg(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert_eq!(content, "bar\nbar baz\n");
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_dry_run() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_dry");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let job_file = test_dir.join("job.json");
+    fs::write(&job_file, r#"{"steps": ["clean"]}"#).unwrap();
+
+    let test_file = test_dir.join("test.txt");
+    let original = "hello   \n";
+    fs::write(&test_file, original).unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["--job"])
+        .arg(&job_file)
+        .arg("--dry-run")
+        .arg(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // File should be unchanged
+    let content = fs::read_to_string(&test_file).unwrap();
+    assert_eq!(content, original);
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_missing_file() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_missing");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["--job", "/nonexistent/job.json"])
+        .arg(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to read job file"));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_invalid_json() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_badjson");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let job_file = test_dir.join("job.json");
+    fs::write(&job_file, "not valid json {{{").unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["--job"])
+        .arg(&job_file)
+        .arg(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed to parse job"));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_unknown_step() {
+    let test_dir = std::env::temp_dir().join("reformat_test_job_badstep");
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let job_file = test_dir.join("job.json");
+    fs::write(&job_file, r#"{"steps": ["clean", "bogus"]}"#).unwrap();
+
+    let output = Command::new(get_binary_path())
+        .args(&["--job"])
+        .arg(&job_file)
+        .arg(&test_dir)
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown step 'bogus'"));
+
+    fs::remove_dir_all(&test_dir).unwrap();
+}
+
+#[test]
+fn test_job_conflicts_with_preset() {
+    let output = Command::new(get_binary_path())
+        .args(&["--job", "job.json", "-p", "code", "."])
+        .output()
+        .expect("Failed to execute reformat");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot be used with") || stderr.contains("conflict"),
+        "stderr should mention conflict: {}",
+        stderr
+    );
 }

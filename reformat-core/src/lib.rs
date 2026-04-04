@@ -22,9 +22,13 @@ pub mod combined;
 pub mod config;
 pub mod converter;
 pub mod emoji;
+pub mod endings;
 pub mod group;
+pub mod header;
+pub mod indent;
 pub mod refs;
 pub mod rename;
+pub mod replace;
 pub mod whitespace;
 
 // Re-export commonly used types
@@ -34,11 +38,15 @@ pub use combined::{CombinedOptions, CombinedProcessor, CombinedStats};
 pub use config::{Preset, ReformatConfig};
 pub use converter::CaseConverter;
 pub use emoji::{EmojiOptions, EmojiTransformer};
+pub use endings::{EndingsNormalizer, EndingsOptions, LineEnding};
 pub use group::{FileGrouper, GroupOptions, GroupResult, GroupStats};
+pub use header::{HeaderManager, HeaderOptions};
+pub use indent::{IndentNormalizer, IndentOptions, IndentStyle};
 pub use refs::{
     ApplyResult, FixRecord, ReferenceFix, ReferenceFixer, ReferenceScanner, ScanOptions,
 };
 pub use rename::{CaseTransform, FileRenamer, RenameOptions, SpaceReplace, TimestampFormat};
+pub use replace::{ContentReplacer, ReplaceOptions, ReplacePattern, ReplacePatternConfig};
 pub use whitespace::{WhitespaceCleaner, WhitespaceOptions};
 
 // Re-export Result type

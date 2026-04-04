@@ -29,10 +29,20 @@ pub struct Preset {
     pub convert: Option<ConvertConfig>,
     #[serde(default)]
     pub group: Option<GroupConfig>,
+    #[serde(default)]
+    pub endings: Option<EndingsConfig>,
+    #[serde(default)]
+    pub indent: Option<IndentConfig>,
+    #[serde(default)]
+    pub replace: Option<ReplaceConfig>,
+    #[serde(default)]
+    pub header: Option<HeaderConfig>,
 }
 
 /// Valid step names for presets.
-pub const VALID_STEPS: &[&str] = &["rename", "emojis", "clean", "convert", "group"];
+pub const VALID_STEPS: &[&str] = &[
+    "rename", "emojis", "clean", "convert", "group", "endings", "indent", "replace", "header",
+];
 
 /// Validate that all steps in a preset are recognized.
 pub fn validate_steps(preset_name: &str, steps: &[String]) -> crate::Result<()> {
@@ -127,6 +137,47 @@ pub struct GroupConfig {
     pub recursive: Option<bool>,
 }
 
+/// Configuration for the endings step.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EndingsConfig {
+    pub style: Option<String>,
+    pub file_extensions: Option<Vec<String>>,
+    pub recursive: Option<bool>,
+}
+
+/// Configuration for the indent step.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct IndentConfig {
+    pub style: Option<String>,
+    pub width: Option<usize>,
+    pub file_extensions: Option<Vec<String>>,
+    pub recursive: Option<bool>,
+}
+
+/// A single replace pattern in config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplacePatternEntry {
+    pub find: String,
+    pub replace: String,
+}
+
+/// Configuration for the replace step.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ReplaceConfig {
+    pub patterns: Option<Vec<ReplacePatternEntry>>,
+    pub file_extensions: Option<Vec<String>>,
+    pub recursive: Option<bool>,
+}
+
+/// Configuration for the header step.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HeaderConfig {
+    pub text: Option<String>,
+    pub update_year: Option<bool>,
+    pub file_extensions: Option<Vec<String>>,
+    pub recursive: Option<bool>,
+}
+
 fn parse_case_format(s: &str) -> Option<CaseFormat> {
     match s {
         "camel" | "camelCase" => Some(CaseFormat::CamelCase),
@@ -183,7 +234,10 @@ mod tests {
 
         let rename = code.rename.as_ref().unwrap();
         assert_eq!(rename.case_transform.as_deref(), Some("lowercase"));
-        assert_eq!(rename.parse_case_transform(), Some(CaseTransform::Lowercase));
+        assert_eq!(
+            rename.parse_case_transform(),
+            Some(CaseTransform::Lowercase)
+        );
         assert_eq!(rename.parse_space_replace(), Some(SpaceReplace::Hyphen));
 
         let emojis = code.emojis.as_ref().unwrap();

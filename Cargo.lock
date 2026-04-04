@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "reformat"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "reformat-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "reformat-plugins"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde",

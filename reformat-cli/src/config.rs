@@ -32,25 +32,20 @@ pub fn load_config() -> anyhow::Result<Option<ReformatConfig>> {
 }
 
 /// Look up a preset by name in the loaded config.
-pub fn get_preset<'a>(
-    config: &'a ReformatConfig,
-    name: &str,
-) -> anyhow::Result<&'a Preset> {
-    let preset = config
-        .get(name)
-        .ok_or_else(|| {
-            let available: Vec<&str> = config.keys().map(|k| k.as_str()).collect();
-            anyhow::anyhow!(
-                "preset '{}' not found in {}. Available presets: {}",
-                name,
-                CONFIG_FILENAME,
-                if available.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    available.join(", ")
-                }
-            )
-        })?;
+pub fn get_preset<'a>(config: &'a ReformatConfig, name: &str) -> anyhow::Result<&'a Preset> {
+    let preset = config.get(name).ok_or_else(|| {
+        let available: Vec<&str> = config.keys().map(|k| k.as_str()).collect();
+        anyhow::anyhow!(
+            "preset '{}' not found in {}. Available presets: {}",
+            name,
+            CONFIG_FILENAME,
+            if available.is_empty() {
+                "(none)".to_string()
+            } else {
+                available.join(", ")
+            }
+        )
+    })?;
     validate_steps(name, &preset.steps)?;
     Ok(preset)
 }

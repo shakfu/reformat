@@ -5,10 +5,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info};
 use logging_timer::time;
 use reformat_core::{
-    CaseConverter, CaseFormat, CaseTransform, CombinedOptions, CombinedProcessor, EmojiOptions,
-    EmojiTransformer, FileGrouper, FileRenamer, GroupOptions, ReferenceFixer, ReferenceScanner,
-    RenameOptions, ScanOptions, SpaceReplace, TimestampFormat, WhitespaceCleaner,
-    WhitespaceOptions,
+    CaseConverter, CaseFormat, CaseTransform, CombinedOptions, CombinedProcessor, ContentReplacer,
+    EmojiOptions, EmojiTransformer, EndingsNormalizer, EndingsOptions, FileGrouper, FileRenamer,
+    GroupOptions, HeaderManager, HeaderOptions, IndentNormalizer, IndentOptions, IndentStyle,
+    LineEnding, ReferenceFixer, ReferenceScanner, RenameOptions, ReplaceOptions, ReplacePattern,
+    ScanOptions, SpaceReplace, TimestampFormat, WhitespaceCleaner, WhitespaceOptions,
 };
 use simplelog::*;
 use std::io::{self, Write};
@@ -22,12 +23,18 @@ use std::path::{Path, PathBuf};
     long_about = "A modular code transformation framework.\n\n\
                   Usage:\n\
                   - reformat <path>: Run all transformations (rename to lowercase, emojis, clean)\n\
-                  - reformat -r <path>: Run all transformations recursively\n\n\
+                  - reformat -p <preset> <path>: Run a named preset from reformat.json\n\
+                  - reformat --job <file|-> <path>: Run an ad-hoc job from a file or stdin\n\n\
                   Commands:\n\
                   - convert: Convert between case formats\n\
                   - clean: Remove trailing whitespace\n\
                   - emojis: Remove or replace emojis with text alternatives\n\
-                  - rename_files: Rename files with various transformations"
+                  - rename_files: Rename files with various transformations\n\
+                  - group: Group files by common prefix into subdirectories\n\
+                  - endings: Normalize line endings (LF/CRLF/CR)\n\
+                  - indent: Normalize indentation (tabs/spaces)\n\
+                  - replace: Regex find-and-replace across files\n\
+                  - header: Insert or update file headers"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -38,8 +45,22 @@ struct Cli {
     path: Option<PathBuf>,
 
     /// Run a named preset from reformat.json
-    #[arg(short = 'p', long = "preset", requires = "path")]
+    #[arg(
+        short = 'p',
+        long = "preset",
+        requires = "path",
+        conflicts_with = "job"
+    )]
     preset: Option<String>,
+
+    /// Run an ad-hoc job from a JSON file (or "-" for stdin)
+    #[arg(
+        short = 'j',
+        long = "job",
+        requires = "path",
+        conflicts_with = "preset"
+    )]
+    job: Option<String>,
 
     /// Process files recursively (when no subcommand is specified)
     #[arg(short = 'r', long, requires = "path")]
@@ -334,6 +355,106 @@ enum Commands {
         /// Show verbose output during reference scanning (useful for debugging hangs)
         #[arg(long = "verbose-scan")]
         verbose_scan: bool,
+    },
+
+    /// Normalize line endings across files
+    Endings {
+        /// The directory or file to process
+        path: PathBuf,
+
+        /// Target line ending style: lf, crlf, or cr
+        #[arg(short = 's', long = "style", default_value = "lf")]
+        style: String,
+
+        /// Process files recursively [default: true]
+        #[arg(short = 'r', long, default_value_t = true)]
+        recursive: bool,
+
+        /// Dry run (don't modify files)
+        #[arg(short = 'd', long = "dry-run")]
+        dry_run: bool,
+
+        /// File extensions to process
+        #[arg(short = 'e', long = "extensions")]
+        extensions: Option<Vec<String>>,
+    },
+
+    /// Normalize indentation (convert between tabs and spaces)
+    Indent {
+        /// The directory or file to process
+        path: PathBuf,
+
+        /// Target indent style: spaces or tabs
+        #[arg(short = 's', long = "style", default_value = "spaces")]
+        style: String,
+
+        /// Number of spaces per indent level (or tab width for conversion)
+        #[arg(short = 'w', long = "width", default_value_t = 4)]
+        width: usize,
+
+        /// Process files recursively [default: true]
+        #[arg(short = 'r', long, default_value_t = true)]
+        recursive: bool,
+
+        /// Dry run (don't modify files)
+        #[arg(short = 'd', long = "dry-run")]
+        dry_run: bool,
+
+        /// File extensions to process
+        #[arg(short = 'e', long = "extensions")]
+        extensions: Option<Vec<String>>,
+    },
+
+    /// Regex find-and-replace across files
+    Replace {
+        /// The directory or file to process
+        path: PathBuf,
+
+        /// Find pattern (regex)
+        #[arg(short = 'f', long = "find")]
+        find: String,
+
+        /// Replacement string (supports capture groups: $1, $2, etc.)
+        #[arg(long = "replace-with")]
+        replace_with: String,
+
+        /// Process files recursively [default: true]
+        #[arg(short = 'r', long, default_value_t = true)]
+        recursive: bool,
+
+        /// Dry run (don't modify files)
+        #[arg(short = 'd', long = "dry-run")]
+        dry_run: bool,
+
+        /// File extensions to process
+        #[arg(short = 'e', long = "extensions")]
+        extensions: Option<Vec<String>>,
+    },
+
+    /// Insert or update file headers (license, copyright, etc.)
+    Header {
+        /// The directory or file to process
+        path: PathBuf,
+
+        /// Header text to insert (use \n for newlines)
+        #[arg(short = 't', long = "text")]
+        text: String,
+
+        /// Replace {year} in header text with the current year
+        #[arg(long = "update-year")]
+        update_year: bool,
+
+        /// Process files recursively [default: true]
+        #[arg(short = 'r', long, default_value_t = true)]
+        recursive: bool,
+
+        /// Dry run (don't modify files)
+        #[arg(short = 'd', long = "dry-run")]
+        dry_run: bool,
+
+        /// File extensions to process
+        #[arg(short = 'e', long = "extensions")]
+        extensions: Option<Vec<String>>,
     },
 }
 
@@ -1021,13 +1142,204 @@ fn run_group(
 }
 
 #[time("info")]
-fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
-    let config = config::load_config()?
-        .ok_or_else(|| anyhow::anyhow!("reformat.json not found in current directory"))?;
-    let preset = config::get_preset(&config, name)?;
+fn run_endings(
+    path: PathBuf,
+    style: &str,
+    recursive: bool,
+    dry_run: bool,
+    extensions: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    let line_ending = LineEnding::parse(style).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid line ending style '{}'. Valid values: lf, crlf, cr",
+            style
+        )
+    })?;
 
     info!(
-        "Running preset '{}' with {} step(s) on: {}",
+        "Normalizing line endings to {:?} in: {}",
+        line_ending,
+        path.display()
+    );
+
+    let mut options = EndingsOptions {
+        style: line_ending,
+        recursive,
+        dry_run,
+        ..Default::default()
+    };
+    if let Some(exts) = extensions {
+        options.file_extensions = exts;
+    }
+
+    let spinner = create_spinner("Normalizing line endings...");
+    let normalizer = EndingsNormalizer::new(options);
+    let (files, endings) = normalizer.process(&path)?;
+    spinner.finish_and_clear();
+
+    if files > 0 {
+        let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+        println!(
+            "{}Normalized {} ending(s) in {} file(s)",
+            prefix, endings, files
+        );
+    } else {
+        println!("No files needed line ending normalization");
+    }
+
+    Ok(())
+}
+
+#[time("info")]
+fn run_indent(
+    path: PathBuf,
+    style: &str,
+    width: usize,
+    recursive: bool,
+    dry_run: bool,
+    extensions: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    let indent_style = IndentStyle::parse(style).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid indent style '{}'. Valid values: spaces, tabs",
+            style
+        )
+    })?;
+
+    info!(
+        "Normalizing indentation to {:?} (width {}) in: {}",
+        indent_style,
+        width,
+        path.display()
+    );
+
+    let mut options = IndentOptions {
+        style: indent_style,
+        width,
+        recursive,
+        dry_run,
+        ..Default::default()
+    };
+    if let Some(exts) = extensions {
+        options.file_extensions = exts;
+    }
+
+    let spinner = create_spinner("Normalizing indentation...");
+    let normalizer = IndentNormalizer::new(options);
+    let (files, lines) = normalizer.process(&path)?;
+    spinner.finish_and_clear();
+
+    if files > 0 {
+        let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+        println!(
+            "{}Normalized {} line(s) in {} file(s)",
+            prefix, lines, files
+        );
+    } else {
+        println!("No files needed indentation normalization");
+    }
+
+    Ok(())
+}
+
+#[time("info")]
+fn run_replace(
+    path: PathBuf,
+    find: &str,
+    replace_with: &str,
+    recursive: bool,
+    dry_run: bool,
+    extensions: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    info!(
+        "Replacing '{}' with '{}' in: {}",
+        find,
+        replace_with,
+        path.display()
+    );
+
+    let mut options = ReplaceOptions {
+        patterns: vec![ReplacePattern {
+            find: find.to_string(),
+            replace: replace_with.to_string(),
+        }],
+        recursive,
+        dry_run,
+        ..Default::default()
+    };
+    if let Some(exts) = extensions {
+        options.file_extensions = exts;
+    }
+
+    let spinner = create_spinner("Replacing content...");
+    let replacer = ContentReplacer::new(options)?;
+    let (files, replacements) = replacer.process(&path)?;
+    spinner.finish_and_clear();
+
+    if files > 0 {
+        let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+        println!(
+            "{}Made {} replacement(s) in {} file(s)",
+            prefix, replacements, files
+        );
+    } else {
+        println!("No files matched the pattern");
+    }
+
+    Ok(())
+}
+
+#[time("info")]
+fn run_header(
+    path: PathBuf,
+    text: &str,
+    update_year: bool,
+    recursive: bool,
+    dry_run: bool,
+    extensions: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    info!("Managing headers in: {}", path.display());
+
+    // Allow \n in the text argument to represent actual newlines
+    let resolved_text = text.replace("\\n", "\n");
+
+    let mut options = HeaderOptions {
+        text: resolved_text,
+        update_year,
+        recursive,
+        dry_run,
+        ..Default::default()
+    };
+    if let Some(exts) = extensions {
+        options.file_extensions = exts;
+    }
+
+    let spinner = create_spinner("Managing file headers...");
+    let manager = HeaderManager::new(options)?;
+    let (files, _) = manager.process(&path)?;
+    spinner.finish_and_clear();
+
+    if files > 0 {
+        let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+        println!("{}Updated headers in {} file(s)", prefix, files);
+    } else {
+        println!("All files already have correct headers");
+    }
+
+    Ok(())
+}
+
+/// Core pipeline execution engine. Both presets and jobs use this.
+fn run_pipeline(
+    name: &str,
+    preset: &reformat_core::Preset,
+    path: &Path,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    reformat_core::config::validate_steps(name, &preset.steps)?;
+
+    info!(
+        "Running '{}' with {} step(s) on: {}",
         name,
         preset.steps.len(),
         path.display()
@@ -1061,7 +1373,7 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
 
                 let spinner = create_spinner(&format!("{}: renaming files...", step_label));
                 let renamer = FileRenamer::new(options);
-                let count = renamer.process(&path)?;
+                let count = renamer.process(path)?;
                 spinner.finish_and_clear();
 
                 let prefix = if dry_run { "[DRY-RUN] " } else { "" };
@@ -1095,7 +1407,7 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
 
                 let spinner = create_spinner(&format!("{}: transforming emojis...", step_label));
                 let transformer = EmojiTransformer::new(options);
-                let (files, changes) = transformer.process(&path)?;
+                let (files, changes) = transformer.process(path)?;
                 spinner.finish_and_clear();
 
                 let prefix = if dry_run { "[DRY-RUN] " } else { "" };
@@ -1129,7 +1441,7 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
 
                 let spinner = create_spinner(&format!("{}: cleaning whitespace...", step_label));
                 let cleaner = WhitespaceCleaner::new(options);
-                let (files, lines) = cleaner.process(&path)?;
+                let (files, lines) = cleaner.process(path)?;
                 spinner.finish_and_clear();
 
                 let prefix = if dry_run { "[DRY-RUN] " } else { "" };
@@ -1157,10 +1469,7 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
                     )
                 })?;
                 let to = cfg.parse_to_format().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "preset '{}': convert.to_format is missing or invalid",
-                        name
-                    )
+                    anyhow::anyhow!("preset '{}': convert.to_format is missing or invalid", name)
                 })?;
 
                 let converter = CaseConverter::new(
@@ -1182,7 +1491,7 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
                 )?;
 
                 let spinner = create_spinner(&format!("{}: converting case...", step_label));
-                converter.process_directory(&path)?;
+                converter.process_directory(path)?;
                 spinner.finish_and_clear();
 
                 let prefix = if dry_run { "[DRY-RUN] " } else { "" };
@@ -1220,7 +1529,7 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
 
                 let spinner = create_spinner(&format!("{}: grouping files...", step_label));
                 let grouper = FileGrouper::new(options);
-                let result = grouper.process_with_changes(&path)?;
+                let result = grouper.process_with_changes(path)?;
                 spinner.finish_and_clear();
 
                 let stats = &result.stats;
@@ -1235,12 +1544,205 @@ fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
                 }
             }
 
+            "endings" => {
+                let cfg = preset.endings.as_ref();
+                let mut options = EndingsOptions {
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(c) = cfg {
+                    if let Some(ref s) = c.style {
+                        if let Some(le) = LineEnding::parse(s) {
+                            options.style = le;
+                        }
+                    }
+                    if let Some(ref exts) = c.file_extensions {
+                        options.file_extensions = exts.clone();
+                    }
+                    if let Some(r) = c.recursive {
+                        options.recursive = r;
+                    }
+                }
+
+                let spinner =
+                    create_spinner(&format!("{}: normalizing line endings...", step_label));
+                let normalizer = EndingsNormalizer::new(options);
+                let (files, endings) = normalizer.process(path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if files > 0 {
+                    println!(
+                        "{}  endings: {} file(s), {} ending(s) normalized",
+                        prefix, files, endings
+                    );
+                } else {
+                    println!("  endings: no files needed line ending normalization");
+                }
+            }
+
+            "indent" => {
+                let cfg = preset.indent.as_ref();
+                let mut options = IndentOptions {
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(c) = cfg {
+                    if let Some(ref s) = c.style {
+                        if let Some(is) = IndentStyle::parse(s) {
+                            options.style = is;
+                        }
+                    }
+                    if let Some(w) = c.width {
+                        options.width = w;
+                    }
+                    if let Some(ref exts) = c.file_extensions {
+                        options.file_extensions = exts.clone();
+                    }
+                    if let Some(r) = c.recursive {
+                        options.recursive = r;
+                    }
+                }
+
+                let spinner =
+                    create_spinner(&format!("{}: normalizing indentation...", step_label));
+                let normalizer = IndentNormalizer::new(options);
+                let (files, lines) = normalizer.process(path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if files > 0 {
+                    println!(
+                        "{}  indent: {} file(s), {} line(s) normalized",
+                        prefix, files, lines
+                    );
+                } else {
+                    println!("  indent: no files needed indentation normalization");
+                }
+            }
+
+            "replace" => {
+                let cfg = preset.replace.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "preset '{}': 'replace' step requires a [replace] config with patterns",
+                        name
+                    )
+                })?;
+                let patterns = cfg
+                    .patterns
+                    .as_ref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("preset '{}': replace.patterns is missing", name)
+                    })?
+                    .iter()
+                    .map(|p| ReplacePattern {
+                        find: p.find.clone(),
+                        replace: p.replace.clone(),
+                    })
+                    .collect();
+
+                let mut options = ReplaceOptions {
+                    patterns,
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(ref exts) = cfg.file_extensions {
+                    options.file_extensions = exts.clone();
+                }
+                if let Some(r) = cfg.recursive {
+                    options.recursive = r;
+                }
+
+                let spinner = create_spinner(&format!("{}: replacing content...", step_label));
+                let replacer = ContentReplacer::new(options)?;
+                let (files, replacements) = replacer.process(path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if files > 0 {
+                    println!(
+                        "{}  replace: {} file(s), {} replacement(s)",
+                        prefix, files, replacements
+                    );
+                } else {
+                    println!("  replace: no files matched any patterns");
+                }
+            }
+
+            "header" => {
+                let cfg = preset.header.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "preset '{}': 'header' step requires a [header] config with text",
+                        name
+                    )
+                })?;
+                let text = cfg.text.clone().unwrap_or_default();
+                let mut options = HeaderOptions {
+                    text,
+                    dry_run,
+                    ..Default::default()
+                };
+                if let Some(v) = cfg.update_year {
+                    options.update_year = v;
+                }
+                if let Some(ref exts) = cfg.file_extensions {
+                    options.file_extensions = exts.clone();
+                }
+                if let Some(r) = cfg.recursive {
+                    options.recursive = r;
+                }
+
+                let spinner = create_spinner(&format!("{}: managing headers...", step_label));
+                let manager = HeaderManager::new(options)?;
+                let (files, _) = manager.process(path)?;
+                spinner.finish_and_clear();
+
+                let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+                if files > 0 {
+                    println!("{}  header: {} file(s) updated", prefix, files);
+                } else {
+                    println!("  header: all files already have correct headers");
+                }
+            }
+
             _ => unreachable!("step validation should have caught this"),
         }
     }
 
-    println!("Preset '{}' complete.", name);
+    println!("Pipeline '{}' complete.", name);
     Ok(())
+}
+
+#[time("info")]
+fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
+    let config = config::load_config()?
+        .ok_or_else(|| anyhow::anyhow!("reformat.json not found in current directory"))?;
+    let preset = config::get_preset(&config, name)?;
+    run_pipeline(name, preset, &path, dry_run)
+}
+
+#[time("info")]
+fn run_job(job_source: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
+    let content = if job_source == "-" {
+        info!("Reading job from stdin");
+        let mut buf = String::new();
+        io::Read::read_to_string(&mut io::stdin(), &mut buf)?;
+        buf
+    } else {
+        info!("Reading job from file: {}", job_source);
+        std::fs::read_to_string(job_source)
+            .map_err(|e| anyhow::anyhow!("failed to read job file '{}': {}", job_source, e))?
+    };
+
+    let preset: reformat_core::Preset = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse job: {}", e))?;
+
+    let label = if job_source == "-" {
+        "stdin"
+    } else {
+        job_source
+    };
+    run_pipeline(label, &preset, &path, dry_run)
 }
 
 #[time("info")]
@@ -1312,6 +1814,15 @@ fn main() -> anyhow::Result<()> {
                     run_preset(&preset_name, path, cli.dry_run)
                 } else {
                     error!("No path specified. Usage: reformat -p <preset> <path>");
+                    std::process::exit(1);
+                }
+            } else if let Some(job_source) = cli.job {
+                // Job mode: run ad-hoc pipeline from file or stdin
+                if let Some(path) = cli.path {
+                    debug!("Running job from '{}'", job_source);
+                    run_job(&job_source, path, cli.dry_run)
+                } else {
+                    error!("No path specified. Usage: reformat --job <file|-> <path>");
                     std::process::exit(1);
                 }
             } else if let Some(path) = cli.path {
@@ -1482,6 +1993,53 @@ fn main() -> anyhow::Result<()> {
                     scope,
                     verbose_scan,
                 )
+            }
+
+            Commands::Endings {
+                path,
+                style,
+                recursive,
+                dry_run,
+                extensions,
+            } => {
+                debug!("Running endings subcommand");
+                run_endings(path, &style, recursive, dry_run, extensions)
+            }
+
+            Commands::Indent {
+                path,
+                style,
+                width,
+                recursive,
+                dry_run,
+                extensions,
+            } => {
+                debug!("Running indent subcommand");
+                run_indent(path, &style, width, recursive, dry_run, extensions)
+            }
+
+            Commands::Replace {
+                path,
+                find,
+                replace_with,
+                recursive,
+                dry_run,
+                extensions,
+            } => {
+                debug!("Running replace subcommand");
+                run_replace(path, &find, &replace_with, recursive, dry_run, extensions)
+            }
+
+            Commands::Header {
+                path,
+                text,
+                update_year,
+                recursive,
+                dry_run,
+                extensions,
+            } => {
+                debug!("Running header subcommand");
+                run_header(path, &text, update_year, recursive, dry_run, extensions)
             }
         },
     };

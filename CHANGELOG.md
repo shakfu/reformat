@@ -5,11 +5,118 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6]
+
+### Added
+
+#### New Transformers
+
+**Line Ending Normalization** (`endings` subcommand)
+
+- Normalize line endings to LF, CRLF, or CR across files
+- Byte-level parsing correctly distinguishes CR, LF, and CRLF sequences
+- Binary file detection via null-byte scanning (skips binary files automatically)
+- Supports file extension filtering, recursive processing, and dry-run mode
+- Usage: `reformat endings --style lf src/`
+- Library API: `EndingsNormalizer`, `EndingsOptions`, `LineEnding`
+
+**Indentation Normalization** (`indent` subcommand)
+
+- Convert between tabs and spaces with configurable width
+- Tab-stop-aware conversion: tabs align to the next multiple of the configured width
+- Handles mixed indentation (tabs + spaces on the same line)
+- Partial tab stops preserved when converting spaces to tabs (e.g., 6 spaces with width 4 becomes 1 tab + 2 spaces)
+- Only modifies leading whitespace; content after indentation is untouched
+- Usage: `reformat indent --style spaces --width 4 src/`
+- Library API: `IndentNormalizer`, `IndentOptions`, `IndentStyle`
+
+**Regex Find-and-Replace** (`replace` subcommand)
+
+- Apply regex patterns with capture group support (`$1`, `$2`, etc.)
+- Chain multiple patterns in sequence via presets/jobs (output of pattern N is input to pattern N+1)
+- Regex compilation happens once at construction time; invalid patterns produce clear errors
+- Usage: `reformat replace --find "old_api\\(" --replace-with "new_api(" src/`
+- Library API: `ContentReplacer`, `ReplaceOptions`, `ReplacePattern`
+
+**File Header Management** (`header` subcommand)
+
+- Insert or update license/copyright headers at the top of source files
+- `{year}` template variable with automatic current-year substitution (`--update-year`)
+- Year-flexible detection: existing headers with any 4-digit year (19xx/20xx) are recognized and updated in place
+- Preserves shebang lines (`#!/usr/bin/env python`) above the header
+- Three modes: insert (header missing), update (header present but year differs), skip (exact match)
+- Usage: `reformat header -t "// Copyright {year} MyOrg" --update-year src/`
+- Library API: `HeaderManager`, `HeaderOptions`
+
+#### Jobs (`-j` / `--job`)
+
+- **New ad-hoc pipeline execution** for one-off transformation tasks
+  - Same format as a single preset, loaded from a file or stdin instead of `reformat.json`
+  - Run with `reformat --job <file.json> <path>` or `reformat --job - <path>` (stdin)
+  - Mutually exclusive with `--preset` (enforced by clap)
+  - Supports all steps and dry-run mode
+  - Ideal for: multi-pattern replacements, migration scripts, scripted CI transforms
+
+- **Example job file**:
+
+  ```json
+  {
+    "steps": ["replace", "clean"],
+    "replace": {
+      "patterns": [
+        {"find": "old_api\\(", "replace": "new_api("},
+        {"find": "Copyright 2024", "replace": "Copyright 2025"}
+      ]
+    }
+  }
+  ```
+
+- **Stdin usage**:
+
+  ```bash
+  echo '{"steps":["clean"]}' | reformat --job - src/
+  ```
+
+#### Pipeline Architecture Refactor
+
+- Extracted shared `run_pipeline()` execution engine from `run_preset()`
+- Both presets (`-p`) and jobs (`--job`) now use the same pipeline executor
+- Preset steps expanded from 5 to 9: `rename`, `emojis`, `clean`, `convert`, `group`, `endings`, `indent`, `replace`, `header`
+
+#### New Per-step Configuration Options
+
+- `endings`: `style` (lf/crlf/cr), `file_extensions`, `recursive`
+- `indent`: `style` (spaces/tabs), `width`, `file_extensions`, `recursive`
+- `replace`: `patterns` (array of `{find, replace}`), `file_extensions`, `recursive`
+- `header`: `text`, `update_year`, `file_extensions`, `recursive`
+
+#### New Core Modules
+
+- **EndingsNormalizer** (`reformat-core/src/endings.rs`) -- line ending normalization
+- **IndentNormalizer** (`reformat-core/src/indent.rs`) -- indentation conversion
+- **ContentReplacer** (`reformat-core/src/replace.rs`) -- regex find-and-replace
+- **HeaderManager** (`reformat-core/src/header.rs`) -- file header management
+- **Config additions**: `EndingsConfig`, `IndentConfig`, `ReplaceConfig`, `HeaderConfig`, `ReplacePatternEntry`
+
+### Changed
+
+- Pipeline completion message changed from "Preset '...' complete." to "Pipeline '...' complete." (reflects that both presets and jobs use the same engine)
+
+### Testing
+
+- Added 10 new unit tests for `EndingsNormalizer` (CRLF/LF/CR conversion, mixed endings, binary skip, dry-run)
+- Added 10 new unit tests for `IndentNormalizer` (tabs-to-spaces, spaces-to-tabs, mixed indent, partial tab stops)
+- Added 9 new unit tests for `ContentReplacer` (simple replacement, regex, capture groups, multi-pattern, invalid regex)
+- Added 9 new unit tests for `HeaderManager` (insert, update year, shebang preservation, multiline, dry-run)
+- Added 8 new CLI integration tests for `--job` (file, stdin, multi-step, dry-run, missing file, invalid JSON, unknown step, conflicts with preset)
+- All 201 tests passing
+
 ## [0.1.5]
 
 ### Added
 
 #### Presets (`-p` / `--preset`)
+
 - **New preset system** for defining reusable transformation pipelines in `reformat.json`
   - Define named presets with an ordered list of steps: `rename`, `emojis`, `clean`, `convert`, `group`
   - Per-step configuration overrides (e.g., custom case transforms, file extensions, separators)
@@ -17,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Dry-run support via `-d` flag applies to all steps in the preset
 
 - **Configuration file format** (`reformat.json`):
+
   ```json
   {
     "code": {
@@ -41,6 +149,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Step validation**: Unknown step names are rejected with a clear error listing valid steps
 
 #### New Core Module
+
 - **Config module** (`reformat-core/src/config.rs`)
   - `ReformatConfig` type (preset name to `Preset` mapping)
   - `Preset` struct with ordered steps and optional per-step config
@@ -49,14 +158,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Case format parsing helpers for convert config
 
 #### New CLI Module
+
 - **Config loader** (`reformat-cli/src/config.rs`)
   - `load_config()` / `load_config_from()` for reading `reformat.json`
   - `get_preset()` for looking up and validating a named preset
 
 ### Fixed
+
 - Simplified CLI integration test binary path resolution using `env!("CARGO_BIN_EXE_reformat")` instead of fragile manual path traversal with fallback build logic
 
 ### Testing
+
 - Added 7 new unit tests for core config module (deserialization, validation, case format parsing)
 - Added 6 new CLI unit tests for config loading and preset lookup
 - Added 6 new CLI integration tests for preset execution (single step, multi-step, dry-run, missing config, unknown preset)
@@ -67,13 +179,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### File Grouping: Suffix-based Splitting (`--from-suffix`)
+
 - **New `--from-suffix` option** for grouping files by splitting at the LAST separator instead of the first
   - Useful when files have multi-part prefixes like `activity_relationships_list.tmpl`
   - Creates directories from the full prefix (everything before the last separator)
   - Uses the suffix (part after last separator) as the filename
 
 - **Example transformation** with `--from-suffix`:
-  ```
+
+  ```text
   Before:                                    After:
   activity_relationships_list.tmpl          activity_relationships/
   activity_relationships_create.tmpl            list.tmpl
@@ -84,12 +198,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 
 - **Comparison of splitting modes**:
+
   | Input | `--strip-prefix` (first sep) | `--from-suffix` (last sep) |
   |-------|------------------------------|---------------------------|
   | `a_b_c.txt` | `a/b_c.txt` | `a_b/c.txt` |
   | `user_profile_edit.tmpl` | `user/profile_edit.tmpl` | `user_profile/edit.tmpl` |
 
 - **Usage**:
+
   ```bash
   reformat group --from-suffix templates/
   ```
@@ -97,6 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--from-suffix` implicitly enables prefix stripping (no need to also specify `--strip-prefix`)
 
 ### Testing
+
 - Added 4 new unit tests for suffix-based splitting
 - All 135 tests passing
 
@@ -105,6 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### File Grouping Command (`group`)
+
 - **New `group` subcommand** for organizing files by common prefix into subdirectories
   - Analyzes files in a directory and identifies common prefixes
   - Creates subdirectories matching file prefixes
@@ -127,16 +245,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--scope <DIR>`: Directory to scan recursively for broken references
 
 - **Example transformations**:
-  ```
+
+  ```text
   # Without --strip-prefix:
   wbs_create.tmpl → wbs/wbs_create.tmpl
-  
+
   # With --strip-prefix:
   wbs_create.tmpl → wbs/create.tmpl
   work_package_list.tmpl → work/package_list.tmpl
   ```
 
 #### Broken Reference Detection and Fixing
+
 - **Automatic change tracking**: After grouping, generates `changes.json` with a complete record of all file operations
 - **Interactive workflow**: Prompts user to scan for broken references after grouping
 - **Reference scanning**: Scans codebase for references to moved/renamed files
@@ -150,29 +270,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fix application**: User reviews `fixes.json` and confirms before applying changes
 
 - **Example workflow**:
+
   ```bash
   $ reformat group --strip-prefix templates/
   Created directory: templates/wbs
   Moved and renamed 'wbs_create.tmpl' -> 'wbs/create.tmpl'
-  
+
   Changes recorded to: changes.json
-  
+
   Would you like to scan for broken references? [y/N]: y
   Enter directories to scan: src
-  
+
   Found 2 broken reference(s).
   Proposed fixes written to: fixes.json
-  
+
   Review fixes.json and apply changes? [y/N]: y
   Fixed 2 reference(s) in 2 file(s).
   ```
 
 - **Non-interactive mode**:
+
   ```bash
   reformat group --strip-prefix --no-interactive --scope src templates/
   ```
 
 #### New Core Modules
+
 - **FileGrouper** (`reformat-core/src/group.rs`)
   - `GroupOptions` struct for configuration
   - `GroupStats` and `GroupResult` for operation statistics and change tracking
@@ -192,6 +315,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ReferenceFixer` for applying fixes
 
 ### Testing
+
 - Added 12 new unit tests for `FileGrouper`
 - Added 5 new unit tests for `ChangeRecord`
 - Added 6 new unit tests for `ReferenceScanner` and `ReferenceFixer`
@@ -203,6 +327,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Default Command (Combined Processing)
+
 - **New default command** for efficient single-pass processing
   - `reformat <path>`: Process files without specifying a subcommand
   - `reformat -r <path>`: Process recursively
@@ -214,6 +339,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Single directory traversal instead of three separate scans
 
 #### New Core Module
+
 - **CombinedProcessor** (`reformat-core/src/combined.rs`)
   - Efficient single-pass file processing
   - Tracks and reports detailed statistics for all transformations
@@ -222,17 +348,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Handles path updates after file renaming automatically
 
 ### Changed
+
 - CLI now accepts optional path argument at the top level
 - Existing subcommands (`convert`, `clean`, `emojis`, `rename_files`) remain unchanged
 - Updated help text to highlight new default command usage
 
 ### Testing
+
 - Added 4 new unit tests for `CombinedProcessor`
 - Added 4 new CLI integration tests for default command
 - All 88 tests passing (37 CLI + 51 core + 11 library integration)
 - Tests handle case-insensitive filesystems (macOS/Windows)
 
 ### Documentation
+
 - Updated `CLAUDE.md` with architecture details for combined processing
 - Added usage examples and performance notes
 - Documented the transformation pipeline and benefits
@@ -240,9 +369,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.1]
 
 ### Overview
+
 This release represents a major architectural overhaul and feature expansion. The project has been restructured as a Cargo workspace with a library-first design, enabling both CLI and programmatic usage. Three new subcommands have been added (`convert`, `clean`, `emojis`), along with comprehensive logging and UI enhancements.
 
 ### Changed
+
 - **BREAKING**: Restructured project as Cargo workspace
   - **reformat-core**: Core library for transformations
   - **reformat-cli**: Command-line binary
@@ -260,6 +391,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 #### New Transformers
 
 **Whitespace Cleaning Transformer** (`clean` subcommand)
+
 - Removes trailing whitespace from lines while preserving line endings
 - Supports dry-run mode (`--dry-run`) for previewing changes
 - Recursive processing (default: enabled, `-r` flag)
@@ -268,6 +400,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 - Example: `reformat clean src/`
 
 **Emoji Transformation** (`emojis` subcommand)
+
 - Replaces task completion emojis with text alternatives for better compatibility
 - **Smart emoji mappings**:
   - ✅ → `[x]` (white check mark)
@@ -319,6 +452,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 ### Testing
 
 **Comprehensive Test Coverage**:
+
 - **Unit tests** (24 total):
   - 12 tests for case conversion module (`case.rs`, `converter.rs`)
   - 6 tests for whitespace cleaning module
@@ -333,6 +467,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 - **Total: 51 tests** - all passing with zero functional regressions
 
 **Test Features**:
+
 - Isolated test environments using temp directories
 - Tests for dry-run modes across all transformers
 - Extension filtering validation
@@ -343,6 +478,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 ### Technical Details
 
 **Architecture**:
+
 - Split monolithic `src/main.rs` (437 lines) into organized modules across 3 crates
 - **Core modules**:
   - `reformat-core/src/case.rs` - Case format definitions and conversion logic
@@ -354,6 +490,7 @@ This release represents a major architectural overhaul and feature expansion. Th
   - `reformat-cli/src/main.rs` - Clap-based CLI with subcommands and logging
 
 **Implementation Highlights**:
+
 - Whitespace cleaner preserves file line endings (CRLF/LF)
 - Emoji transformer uses Unicode regex patterns for comprehensive detection
 - Smart emoji replacement mappings maintain markdown compatibility
@@ -362,12 +499,14 @@ This release represents a major architectural overhaul and feature expansion. Th
 - Glob matching supports both filename and relative path patterns
 
 **Dependencies Added**:
+
 - `log` (0.4) - Logging facade
 - `simplelog` (0.12) - Logging implementation with color support
 - `indicatif` (0.17) - Progress bars and spinners
 - `logging_timer` (1.1) - Automatic function timing
 
 **Performance**:
+
 - All transformations complete in milliseconds for typical projects
 - Example timing: `run_convert(), Elapsed=4.089125ms`
 - Efficient regex-based pattern matching
@@ -376,6 +515,7 @@ This release represents a major architectural overhaul and feature expansion. Th
 ## [0.1.0]
 
 ### Added
+
 - Initial Rust implementation of reformat CLI tool with Python-compatible API
 - Support for 6 case format conversions:
   - camelCase
@@ -406,12 +546,14 @@ This release represents a major architectural overhaul and feature expansion. Th
   - Inline code documentation
 
 ### Technical Details
+
 - Manual character-by-character word splitting for camelCase/PascalCase (Rust regex doesn't support lookahead/lookbehind)
 - Regex-based pattern matching for identifying case formats
 - Glob matching supports both filename and relative path patterns
 - Error handling with user-friendly messages
 
 ### Legacy
+
 - Python implementation (case_converter.py) remains available for compatibility
 
 [0.1.0]: https://github.com/yourusername/code-convert/releases/tag/v0.1.0

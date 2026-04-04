@@ -2,7 +2,7 @@
 
 ## Overview
 
-reformat is a modular code transformation framework implemented in Rust. It provides a library-first design with a command-line interface for applying transformations to source code files. The framework supports case format conversion, whitespace cleaning, emoji transformation, file renaming, file grouping with broken reference detection, and preset-based transformation pipelines.
+reformat is a modular code transformation framework implemented in Rust. It provides a library-first design with a command-line interface for applying transformations to source code files. The framework supports case format conversion, whitespace cleaning, emoji transformation, file renaming, file grouping with broken reference detection, line ending normalization, indentation normalization, regex find-and-replace, file header management, and preset-based transformation pipelines.
 
 ## Design Principles
 
@@ -17,9 +17,9 @@ reformat is a modular code transformation framework implemented in Rust. It prov
 
 ### Workspace Organization
 
-```
+```text
 reformat/
-├── Cargo.toml                    # Workspace definition (v0.1.5)
+├── Cargo.toml                    # Workspace definition (v0.1.6)
 ├── reformat.json                 # Example preset configuration
 ├── reformat-core/                # Core library
 │   ├── Cargo.toml
@@ -31,9 +31,13 @@ reformat/
 │       ├── config.rs             # Preset configuration types
 │       ├── converter.rs          # CaseConverter implementation
 │       ├── emoji.rs              # EmojiTransformer implementation
+│       ├── endings.rs            # EndingsNormalizer implementation
 │       ├── group.rs              # FileGrouper implementation
+│       ├── header.rs             # HeaderManager implementation
+│       ├── indent.rs             # IndentNormalizer implementation
 │       ├── refs.rs               # ReferenceScanner and ReferenceFixer
 │       ├── rename.rs             # FileRenamer implementation
+│       ├── replace.rs            # ContentReplacer implementation
 │       └── whitespace.rs         # WhitespaceCleaner implementation
 │
 ├── reformat-cli/                 # CLI binary
@@ -64,7 +68,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 [workspace.dependencies]
@@ -101,11 +105,13 @@ pub enum CaseFormat {
 ```
 
 **Key Methods:**
+
 - `pattern(&self) -> &str` - Returns regex pattern for identifying format
 - `split_words(&self, text: &str) -> Vec<String>` - Splits identifier into words
 - `join_words(&self, words: &[String], prefix: &str, suffix: &str) -> String` - Reassembles words
 
 **Implementation Details:**
+
 - Manual character-by-character iteration for camelCase/PascalCase splitting (Rust regex doesn't support lookahead/lookbehind)
 - Regex-based splitting for snake_case, kebab-case variants
 - All words normalized to lowercase during splitting
@@ -136,6 +142,7 @@ pub struct CaseConverter {
 ```
 
 **Transformation Pipeline:**
+
 1. Strip prefix/suffix (if specified)
 2. Replace prefix/suffix (if specified)
 3. Apply word filter
@@ -143,6 +150,7 @@ pub struct CaseConverter {
 5. Add prefix/suffix
 
 **Key Methods:**
+
 - `new(...)` - Creates converter with all options
 - `convert(&self, text: &str) -> String` - Converts single string
 - `process_file(&self, path: &Path) -> Result<bool>` - Processes single file
@@ -166,6 +174,7 @@ pub struct WhitespaceOptions {
 ```
 
 **Key Methods:**
+
 - `clean_file(&self, path: &Path) -> Result<usize>` - Returns lines cleaned
 - `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files, lines) cleaned
 - `should_process(&self, path: &Path) -> bool` - Extension and path filtering
@@ -189,6 +198,7 @@ pub struct EmojiOptions {
 ```
 
 **Key Methods:**
+
 - `transform_file(&self, path: &Path) -> Result<usize>` - Returns emoji changes count
 - `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files, changes)
 
@@ -222,6 +232,7 @@ pub enum TimestampFormat { None, Long, Short }  // YYYYMMDD or YYMMDD
 ```
 
 **Key Methods:**
+
 - `rename_file(&self, path: &Path, is_symlink: bool) -> Result<bool>` - Renames single file
 - `process(&self, path: &Path) -> Result<usize>` - Returns files renamed
 
@@ -256,6 +267,7 @@ pub struct GroupResult {
 ```
 
 **Key Methods:**
+
 - `process(&self, path: &Path) -> Result<GroupStats>` - Process directory
 - `process_with_changes(&self, path: &Path) -> Result<GroupResult>` - Process with change tracking
 - `preview(&self, path: &Path) -> Result<HashMap<String, Vec<String>>>` - Preview groups
@@ -281,6 +293,7 @@ pub struct ChangeRecord {
 ```
 
 **Key Methods:**
+
 - `write_to_file(&self, path: &Path) -> Result<()>` - Serialize to JSON
 - `read_from_file(path: &Path) -> Result<Self>` - Deserialize from JSON
 - `file_moves(&self) -> Vec<(&str, &str)>` - Extract file move pairs
@@ -318,10 +331,140 @@ pub struct FixRecord {
 ```
 
 **Key Methods on ReferenceScanner:**
+
 - `from_change_record(record: &ChangeRecord, options: ScanOptions) -> Self`
 - `new(file_moves: HashMap<String, String>, options: ScanOptions) -> Self`
 
-### 9. Configuration & Presets (`config.rs`)
+### 9. EndingsNormalizer (`endings.rs`)
+
+Normalizes line endings across files (LF, CRLF, CR).
+
+```rust
+pub struct EndingsNormalizer {
+    options: EndingsOptions,
+}
+
+pub struct EndingsOptions {
+    pub style: LineEnding,           // Lf, Crlf, or Cr
+    pub file_extensions: Vec<String>,
+    pub recursive: bool,
+    pub dry_run: bool,
+}
+
+pub enum LineEnding { Lf, Crlf, Cr }
+```
+
+**Key Methods:**
+
+- `normalize_file(&self, path: &Path) -> Result<usize>` - Returns endings changed
+- `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files, endings) changed
+
+**Implementation Details:**
+
+- Byte-level parsing to correctly distinguish CR, LF, and CRLF sequences
+- Binary file detection via null-byte scanning (skips binary files)
+- Processes files as raw bytes to avoid lossy string conversion of line endings
+
+### 10. IndentNormalizer (`indent.rs`)
+
+Converts between tabs and spaces with configurable width.
+
+```rust
+pub struct IndentNormalizer {
+    options: IndentOptions,
+}
+
+pub struct IndentOptions {
+    pub style: IndentStyle,          // Spaces or Tabs
+    pub width: usize,                // Spaces per indent level (default: 4)
+    pub file_extensions: Vec<String>,
+    pub recursive: bool,
+    pub dry_run: bool,
+}
+
+pub enum IndentStyle { Spaces, Tabs }
+```
+
+**Key Methods:**
+
+- `normalize_file(&self, path: &Path) -> Result<usize>` - Returns lines changed
+- `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files, lines) changed
+
+**Implementation Details:**
+
+- Only modifies leading whitespace on each line; content after indentation is untouched
+- Tab-stop-aware conversion: tabs align to the next multiple of `width`
+- Handles mixed indentation (tabs + spaces on the same line)
+- Partial tab stops preserved when converting spaces to tabs (e.g., 6 spaces with width 4 becomes 1 tab + 2 spaces)
+
+### 11. ContentReplacer (`replace.rs`)
+
+Applies regex find-and-replace patterns across files.
+
+```rust
+pub struct ContentReplacer {
+    options: ReplaceOptions,
+    compiled: Vec<CompiledPattern>,  // Pre-compiled regexes
+}
+
+pub struct ReplaceOptions {
+    pub patterns: Vec<ReplacePattern>,
+    pub file_extensions: Vec<String>,
+    pub recursive: bool,
+    pub dry_run: bool,
+}
+
+pub struct ReplacePattern {
+    pub find: String,     // Regex pattern
+    pub replace: String,  // Replacement (supports $1, $2 capture groups)
+}
+```
+
+**Key Methods:**
+
+- `new(options: ReplaceOptions) -> Result<Self>` - Compiles all regex patterns; errors on invalid regex
+- `replace_file(&self, path: &Path) -> Result<usize>` - Returns replacement count
+- `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files, replacements)
+
+**Implementation Details:**
+
+- Patterns are applied sequentially (output of pattern N is input to pattern N+1)
+- Regex compilation happens once at construction time
+- Capture group references ($1, $2) supported in replacement strings
+
+### 12. HeaderManager (`header.rs`)
+
+Inserts or updates file headers (license, copyright, etc.).
+
+```rust
+pub struct HeaderManager {
+    options: HeaderOptions,
+    resolved_header: String,          // Header with {year} resolved
+    header_detector: Option<Regex>,   // Detects existing headers (year-flexible)
+}
+
+pub struct HeaderOptions {
+    pub text: String,                 // Header text (may contain {year})
+    pub update_year: bool,            // Replace {year} with current year
+    pub file_extensions: Vec<String>,
+    pub recursive: bool,
+    pub dry_run: bool,
+}
+```
+
+**Key Methods:**
+
+- `new(options: HeaderOptions) -> Result<Self>` - Resolves year template and builds detector regex
+- `process_file(&self, path: &Path) -> Result<bool>` - Returns true if file was modified
+- `process(&self, path: &Path) -> Result<(usize, usize)>` - Returns (files_changed, ops)
+
+**Implementation Details:**
+
+- Year-flexible detection: existing headers with any 4-digit year (19xx/20xx) are recognized and updated
+- Shebang preservation: `#!` lines at the start of files are kept above the header
+- Three modes: insert (header missing), update (header present but year differs), skip (exact match)
+
+### 13. Configuration & Presets (`config.rs`)
 
 Defines reusable transformation pipelines via `reformat.json`.
 
@@ -335,14 +478,18 @@ pub struct Preset {
     pub clean: Option<CleanConfig>,
     pub convert: Option<ConvertConfig>,
     pub group: Option<GroupConfig>,
+    pub endings: Option<EndingsConfig>,
+    pub indent: Option<IndentConfig>,
+    pub replace: Option<ReplaceConfig>,
+    pub header: Option<HeaderConfig>,
 }
 ```
 
-**Valid steps:** `rename`, `emojis`, `clean`, `convert`, `group`
+**Valid steps:** `rename`, `emojis`, `clean`, `convert`, `group`, `endings`, `indent`, `replace`, `header`
 
 Each step has a corresponding config struct with optional overrides. Steps without explicit configuration use sensible defaults.
 
-### 10. CombinedProcessor (`combined.rs`)
+### 14. CombinedProcessor (`combined.rs`)
 
 Efficient single-pass processing applying multiple transformations.
 
@@ -367,11 +514,13 @@ pub struct CombinedStats {
 ```
 
 **Default Pipeline:**
+
 1. Rename files to lowercase
 2. Transform emojis (task emoji replacement + removal)
 3. Clean whitespace
 
 **Key Methods:**
+
 - `new(options: CombinedOptions) -> Self` - Creates processor with pipeline
 - `with_defaults() -> Self` - Creates with default options
 - `process(&self, path: &Path) -> Result<CombinedStats>` - Processes path
@@ -383,16 +532,19 @@ pub struct CombinedStats {
 Built with `clap` derive macros using subcommand architecture.
 
 **Global Options:**
+
 - `-v, --verbose` - Multi-level verbosity (`-v`, `-vv`, `-vvv`)
 - `-q, --quiet` - Quiet mode (errors only)
 - `--log-file <PATH>` - Write logs to file
 - `-p, --preset <NAME>` - Run a named preset from `reformat.json`
+- `-j, --job <FILE|->` - Run an ad-hoc job from a JSON file or stdin (mutually exclusive with `--preset`)
 
 ### Commands
 
 #### Default Command (no subcommand)
 
 Runs all transformations in a single pass:
+
 ```bash
 reformat <path>         # Process path
 reformat -r <path>      # Process recursively
@@ -433,6 +585,51 @@ reformat group --preview templates/           # Preview only
 reformat group --strip-prefix --scope src templates/  # Scan for broken refs
 ```
 
+#### `endings` - Line ending normalization
+
+```bash
+reformat endings src/                    # Normalize to LF (default)
+reformat endings --style crlf src/       # Normalize to CRLF
+```
+
+#### `indent` - Indentation normalization
+
+```bash
+reformat indent src/                     # Tabs to 4-space (default)
+reformat indent --style tabs src/        # Spaces to tabs
+reformat indent --width 2 src/           # Tabs to 2-space
+```
+
+#### `replace` - Regex find-and-replace
+
+```bash
+reformat replace --find "old" --replace-with "new" src/
+reformat replace --find "func\((\w+)\)" --replace-with "call(\$1)" src/
+```
+
+#### `header` - File header management
+
+```bash
+reformat header -t "// Copyright 2025 MyOrg" src/
+reformat header -t "// Copyright {year} MyOrg" --update-year src/
+```
+
+### Pipeline Execution Model
+
+The CLI has two ways to run multi-step transformation pipelines:
+
+- **Presets** (`-p <name>`) -- Named pipelines stored in `reformat.json`. Reusable and version-controlled.
+- **Jobs** (`--job <file|->`) -- Ad-hoc pipelines loaded from an arbitrary JSON file or stdin. Throwaway.
+
+Both share the same execution engine (`run_pipeline`), which validates steps and executes them in order. The `Preset` struct is the common pipeline format:
+
+```text
+run_preset(name)  -->  loads Preset from reformat.json  -->  run_pipeline(name, preset, path, dry_run)
+run_job(source)   -->  loads Preset from file or stdin   -->  run_pipeline(label, preset, path, dry_run)
+```
+
+The `--preset` and `--job` flags are mutually exclusive (enforced by clap's `conflicts_with`).
+
 ## Public API
 
 All types are exported from `reformat-core`:
@@ -444,9 +641,13 @@ pub use combined::{CombinedOptions, CombinedProcessor, CombinedStats};
 pub use config::{Preset, ReformatConfig};
 pub use converter::CaseConverter;
 pub use emoji::{EmojiOptions, EmojiTransformer};
+pub use endings::{EndingsNormalizer, EndingsOptions, LineEnding};
 pub use group::{FileGrouper, GroupOptions, GroupResult, GroupStats};
+pub use header::{HeaderManager, HeaderOptions};
+pub use indent::{IndentNormalizer, IndentOptions, IndentStyle};
 pub use refs::{ApplyResult, FixRecord, ReferenceFix, ReferenceFixer, ReferenceScanner, ScanOptions};
 pub use rename::{CaseTransform, FileRenamer, RenameOptions, SpaceReplace, TimestampFormat};
+pub use replace::{ContentReplacer, ReplaceOptions, ReplacePattern, ReplacePatternConfig};
 pub use whitespace::{WhitespaceCleaner, WhitespaceOptions};
 
 pub type Result<T> = anyhow::Result<T>;
@@ -459,21 +660,22 @@ pub type Result<T> = anyhow::Result<T>;
 | Location | Type | Count |
 |----------|------|-------|
 | reformat-cli unit tests | CLI parsing | 6 |
-| reformat-cli integration tests | CLI end-to-end | 43 |
-| reformat-core unit tests | Module-level | 94 |
+| reformat-cli integration tests | CLI end-to-end | 51 |
+| reformat-core unit tests | Module-level | 132 |
 | reformat-core integration tests | Library API | 11 |
 | Doc tests | Compilation | 1 |
-| **Total** | | **155** |
+| **Total** | | **201** |
 
 ### Test Strategy
 
-- **Unit tests** cover format patterns, word splitting, transformation pipelines, edge cases, change tracking, config parsing, reference scanning
+- **Unit tests** cover format patterns, word splitting, transformation pipelines, edge cases, change tracking, config parsing, reference scanning, line ending normalization, indentation conversion, regex replacement, header management
 - **Integration tests** cover file processing with temp directories, directory traversal, dry-run mode, extension filtering, grouping operations, preset execution
 - **CLI tests** cover command parsing, argument validation, output format, help/version, exit codes
 
 ## Dependencies
 
 ### reformat-core
+
 - `regex` + `aho-corasick` - Pattern matching
 - `walkdir` - Directory traversal
 - `glob` - File pattern matching
@@ -484,6 +686,7 @@ pub type Result<T> = anyhow::Result<T>;
 - `rayon` (optional) - Parallel processing
 
 ### reformat-cli
+
 - `reformat-core` - Core library
 - `reformat-plugins` - Plugin system
 - `clap` - CLI argument parsing
@@ -496,7 +699,7 @@ pub type Result<T> = anyhow::Result<T>;
 ```bash
 cargo build --workspace          # Build all
 cargo build --release -p reformat  # Release binary
-cargo test --workspace           # Run all 155 tests
+cargo test --workspace           # Run all 201 tests
 cargo install --path reformat-cli  # Install binary
 cargo doc --workspace --open     # Generate docs
 ```
