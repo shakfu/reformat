@@ -60,6 +60,15 @@ pub fn in_git_dir(path: &Path) -> bool {
         .any(|c| matches!(c, Component::Normal(name) if name == ".git"))
 }
 
+/// Renders `path` with `/` separators on every platform. Recorded paths are
+/// written into source files as references, where `\` is wrong.
+pub fn to_slash(path: &Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Predicate for [`walkdir::IntoIter::filter_entry`], pruning excluded
 /// subtrees *before* descending into them rather than filtering their files
 /// out one by one afterwards.
@@ -154,6 +163,12 @@ pub fn walk_dirs(root: &Path, recursive: bool) -> impl Iterator<Item = std::path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_to_slash_uses_forward_slashes() {
+        assert_eq!(to_slash(&Path::new("wbs").join("a.tmpl")), "wbs/a.tmpl");
+        assert_eq!(to_slash(Path::new("a.tmpl")), "a.tmpl");
+    }
 
     #[test]
     fn test_hidden_component_is_excluded() {
