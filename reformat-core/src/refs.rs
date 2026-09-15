@@ -3,7 +3,7 @@
 //! This module provides functionality to scan codebases for references to
 //! moved/renamed files and generate fixes for those references.
 
-use crate::changes::ChangeRecord;
+use crate::changes::{to_slash, ChangeRecord};
 use aho_corasick::AhoCorasick;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -82,7 +82,11 @@ impl FixRecord {
     /// Reads a fix record from a JSON file
     pub fn read_from_file(path: &Path) -> crate::Result<Self> {
         let json = fs::read_to_string(path)?;
-        let record: FixRecord = serde_json::from_str(&json)?;
+        let mut record: FixRecord = serde_json::from_str(&json)?;
+        // Windows builds up to 0.2.0 wrote `\` separators into new_reference.
+        for fix in &mut record.fixes {
+            fix.new_reference = to_slash(&fix.new_reference);
+        }
         Ok(record)
     }
 }
@@ -926,6 +930,31 @@ template: old_file.tmpl
 
         let parsed: FixRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.fixes.len(), 1);
+    }
+
+    #[test]
+    fn test_read_normalizes_windows_separators() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fixes.json");
+        let mut record = FixRecord::new("changes.json", &[]);
+        record.fixes.push(ReferenceFix {
+            file: "main.go".to_string(),
+            line: 1,
+            column: 7,
+            offset: Some(6),
+            context: r#"load("wbs_a.tmpl")"#.to_string(),
+            old_reference: "wbs_a.tmpl".to_string(),
+            new_reference: "wbs\\a.tmpl".to_string(),
+        });
+        record.write_to_file(&path).unwrap();
+
+        let loaded = FixRecord::read_from_file(&path).unwrap();
+        let expected = if cfg!(windows) {
+            "wbs/a.tmpl"
+        } else {
+            "wbs\\a.tmpl"
+        };
+        assert_eq!(loaded.fixes[0].new_reference, expected);
     }
 
     #[test]

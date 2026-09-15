@@ -7,6 +7,18 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+/// Renders `path` with `/` separators. Recorded paths are written into source
+/// files as references, where a Windows `\` separator is wrong.
+pub(crate) fn to_slash(path: impl AsRef<Path>) -> String {
+    let s = path.as_ref().to_string_lossy();
+    // Outside Windows, `\` is a legal filename character, not a separator.
+    if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s.into_owned()
+    }
+}
+
 /// A single change record from a refactoring operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -69,27 +81,32 @@ impl ChangeRecord {
         self
     }
 
-    /// Adds a directory creation change
-    pub fn add_directory_created(&mut self, path: &str) {
+    /// Adds a directory creation change, stored with `/` separators
+    pub fn add_directory_created(&mut self, path: impl AsRef<Path>) {
         self.changes.push(Change::DirectoryCreated {
-            path: path.to_string(),
+            path: to_slash(path),
         });
     }
 
-    /// Adds a file move change
-    pub fn add_file_moved(&mut self, from: &str, to: &str) {
+    /// Adds a file move change, stored with `/` separators
+    pub fn add_file_moved(&mut self, from: impl AsRef<Path>, to: impl AsRef<Path>) {
         self.changes.push(Change::FileMoved {
-            from: from.to_string(),
-            to: to.to_string(),
+            from: to_slash(from),
+            to: to_slash(to),
         });
     }
 
-    /// Adds a file rename change
-    pub fn add_file_renamed(&mut self, from: &str, to: &str, directory: &str) {
+    /// Adds a file rename change, stored with `/` separators
+    pub fn add_file_renamed(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+        directory: impl AsRef<Path>,
+    ) {
         self.changes.push(Change::FileRenamed {
-            from: from.to_string(),
-            to: to.to_string(),
-            directory: directory.to_string(),
+            from: to_slash(from),
+            to: to_slash(to),
+            directory: to_slash(directory),
         });
     }
 
@@ -160,6 +177,27 @@ mod tests {
         let moves = record.file_moves();
         assert_eq!(moves.len(), 2);
         assert_eq!(moves[0], ("wbs_create.tmpl", "wbs/create.tmpl"));
+    }
+
+    #[test]
+    fn test_recorded_paths_use_forward_slashes() {
+        let mut record = ChangeRecord::new("group", Path::new("/tmp/test"));
+        record.add_file_moved(
+            Path::new("t").join("wbs_a.tmpl"),
+            Path::new("wbs").join("a.tmpl"),
+        );
+        assert_eq!(record.file_moves()[0], ("t/wbs_a.tmpl", "wbs/a.tmpl"));
+    }
+
+    #[test]
+    fn test_to_slash() {
+        assert_eq!(to_slash("/abs/wbs/a.tmpl"), "/abs/wbs/a.tmpl");
+        let expected = if cfg!(windows) {
+            "wbs/a.tmpl"
+        } else {
+            "wbs\\a.tmpl"
+        };
+        assert_eq!(to_slash("wbs\\a.tmpl"), expected);
     }
 
     #[test]

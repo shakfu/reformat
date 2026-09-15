@@ -196,7 +196,7 @@ impl FileGrouper {
                 }
                 // Record the directory creation (relative to base_dir)
                 let rel_path = subdir.strip_prefix(base_dir).unwrap_or(&subdir);
-                changes.add_directory_created(&crate::walk::to_slash(rel_path));
+                changes.add_directory_created(rel_path);
                 stats.dirs_created += 1;
             }
 
@@ -263,10 +263,7 @@ impl FileGrouper {
                 }
 
                 // Record the file move
-                changes.add_file_moved(
-                    &crate::walk::to_slash(old_rel),
-                    &crate::walk::to_slash(new_rel),
-                );
+                changes.add_file_moved(old_rel, new_rel);
                 stats.files_moved += 1;
             }
         }

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Library: `ChangeRecord::add_directory_created`, `add_file_moved` and
+  `add_file_renamed` take `impl AsRef<Path>` and store paths with `/`
+  separators. Converting inside the record means a new caller cannot
+  reintroduce the Windows bug below. `&str` and `&Path` arguments still
+  compile; `&Cow<str>` does not.
+
+### Fixed
+
+- On Windows, `group` recorded moves with `\` separators, so `apply_fixes`
+  and the interactive prompt wrote references such as `wbs\a.tmpl` into
+  source files. A `fixes.json` written by an earlier Windows build is
+  corrected when read.
+
 ## [0.2.0] - 2026-09-15
 
 This release breaks the CLI and the library API. See Changed.
