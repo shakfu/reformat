@@ -1,7 +1,8 @@
 //! Indentation normalization transformer
 
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
 
 /// Indentation style
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +32,7 @@ pub struct IndentOptions {
     /// Number of spaces per indent level (used when converting tabs to spaces,
     /// or as the tab width when converting spaces to tabs)
     pub width: usize,
-    /// File extensions to process
+    /// File extensions to process; empty matches every file
     pub file_extensions: Vec<String>,
     /// Process directories recursively
     pub recursive: bool,
@@ -73,29 +74,6 @@ impl IndentNormalizer {
     pub fn with_defaults() -> Self {
         IndentNormalizer {
             options: IndentOptions::default(),
-        }
-    }
-
-    /// Checks if a file should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        if !path.is_file() {
-            return false;
-        }
-
-        // Skip hidden entries and build/vendor directories (see crate::walk)
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return false;
-        }
-
-        if let Some(ext) = path.extension() {
-            let ext_str = format!(".{}", ext.to_string_lossy());
-            self.options.file_extensions.contains(&ext_str)
-        } else {
-            false
         }
     }
 
@@ -155,21 +133,37 @@ impl IndentNormalizer {
 
     /// Normalize indentation in a single file. Returns the number of lines changed.
     pub fn normalize_file(&self, path: &Path) -> crate::Result<usize> {
-        if !self.should_process(path) {
+        if !path.is_file() {
             return Ok(0);
         }
+        crate::step::apply_one(self, &FileTarget::file(path), self.options.dry_run)
+    }
 
-        let content = match crate::text::read_text(path)? {
-            Some(c) => c,
-            None => return Ok(0),
-        };
-        let mut output = String::with_capacity(content.len());
+    /// Processes a directory or file. Returns (files_changed, lines_changed).
+    pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
+        crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
+    }
+}
+
+impl ContentStep for IndentNormalizer {
+    fn name(&self) -> &'static str {
+        "indent"
+    }
+
+    fn accepts(&self, file: &FileTarget) -> bool {
+        crate::step::accepts_by_extension(
+            file,
+            &self.options.file_extensions,
+            self.options.recursive,
+        )
+    }
+
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        let mut output = String::with_capacity(text.len());
         let mut changed_count = 0;
 
-        // Only leading whitespace is rewritten; each line's original
-        // terminator is written back untouched so that normalising
-        // indentation does not also normalise line endings.
-        for (body, terminator) in crate::lines::split_lines(&content) {
+        // Only leading whitespace is rewritten; terminators are kept as found.
+        for (body, terminator) in crate::lines::split_lines(text) {
             let (converted, changed) = self.convert_line(body);
             if changed {
                 changed_count += 1;
@@ -178,48 +172,15 @@ impl IndentNormalizer {
             output.push_str(terminator);
         }
 
-        if changed_count > 0 {
-            if self.options.dry_run {
-                log::info!(
-                    "Would normalize {} line(s) of indentation in '{}'",
-                    changed_count,
-                    path.display()
-                );
-            } else {
-                fs::write(path, output)?;
-                log::info!(
-                    "Normalized {} line(s) of indentation in '{}'",
-                    changed_count,
-                    path.display()
-                );
-            }
-        }
-
-        Ok(changed_count)
+        (changed_count > 0).then_some((output, changed_count))
     }
 
-    /// Processes a directory or file. Returns (files_changed, lines_changed).
-    pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
-        let mut total_files = 0;
-        let mut total_lines = 0;
-
-        if path.is_file() {
-            let lines = self.normalize_file(path)?;
-            if lines > 0 {
-                total_files = 1;
-                total_lines = lines;
-            }
-        } else if path.is_dir() {
-            for entry in crate::walk::walk_files(path, self.options.recursive) {
-                let lines = self.normalize_file(entry.path())?;
-                if lines > 0 {
-                    total_files += 1;
-                    total_lines += lines;
-                }
-            }
+    fn describe(&self, units: usize, dry_run: bool) -> String {
+        if dry_run {
+            format!("Would normalize {} line(s) of indentation in", units)
+        } else {
+            format!("Normalized {} line(s) of indentation in", units)
         }
-
-        Ok((total_files, total_lines))
     }
 }
 

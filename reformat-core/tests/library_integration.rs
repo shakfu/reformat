@@ -1,6 +1,6 @@
 //! Integration tests for using reformat as a library
 
-use reformat_core::{CaseConverter, CaseFormat};
+use reformat_core::{CaseConverter, CaseFormat, ConvertOptions};
 use std::fs;
 
 #[test]
@@ -17,23 +17,11 @@ fn test_library_basic_conversion() {
     fs::write(&test_file, "myVariable = 'test'\nanotherVar = 123").unwrap();
 
     // Use library to convert
-    let converter = CaseConverter::new(
-        CaseFormat::CamelCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".py".to_string()]),
-        false,
-        false,
-        String::new(),
-        String::new(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".py".to_string()],
+        recursive: false,
+        ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -60,23 +48,12 @@ fn test_library_with_prefix() {
     let test_file = test_dir.join("test.js");
     fs::write(&test_file, "let userName = 'alice';").unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::CamelCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".js".to_string()]),
-        false,
-        false,
-        "old_".to_string(),
-        String::new(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".js".to_string()],
+        recursive: false,
+        prefix: "old_".to_string(),
+        ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -97,23 +74,12 @@ fn test_library_with_suffix() {
     let test_file = test_dir.join("test.ts");
     fs::write(&test_file, "const myValue = 42;").unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::CamelCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".ts".to_string()]),
-        false,
-        false,
-        String::new(),
-        "_v2".to_string(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".ts".to_string()],
+        recursive: false,
+        suffix: "_v2".to_string(),
+        ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -135,23 +101,12 @@ fn test_library_dry_run() {
     let original_content = "myVariable = 'test'";
     fs::write(&test_file, original_content).unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::CamelCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".py".to_string()]),
-        false,
-        true, // dry_run = true
-        String::new(),
-        String::new(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".py".to_string()],
+        recursive: false,
+        dry_run: true,
+        ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -180,23 +135,10 @@ fn test_library_recursive() {
     fs::write(&file1, "topLevel = 1").unwrap();
     fs::write(&file2, "nestedVar = 2").unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::CamelCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".py".to_string()]),
-        true, // recursive = true
-        false,
-        String::new(),
-        String::new(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".py".to_string()],
+        ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -225,23 +167,12 @@ fn test_library_word_filter() {
     )
     .unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::CamelCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".py".to_string()]),
-        false,
-        false,
-        String::new(),
-        String::new(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("^get.*".to_string()), // Only convert identifiers starting with "get"
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".py".to_string()],
+        recursive: false,
+        word_filter: Some("^get.*".to_string()),
+        ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -309,23 +240,11 @@ fn test_library_all_case_formats() {
         let test_file = test_dir.join("test.txt");
         fs::write(&test_file, input).unwrap();
 
-        let converter = CaseConverter::new(
-            *from,
-            *to,
-            Some(vec![".txt".to_string()]),
-            false,
-            false,
-            String::new(),
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let converter = CaseConverter::new(ConvertOptions {
+            file_extensions: vec![".txt".to_string()],
+            recursive: false,
+            ..ConvertOptions::new(*from, *to)
+        })
         .unwrap();
 
         converter.process_directory(&test_dir).unwrap();
@@ -352,23 +271,12 @@ fn test_library_strip_prefix() {
     // Use PascalCase identifiers that start with "My" (matches PascalCase pattern)
     fs::write(&test_file, "MyUserName user;\nMyUserId id;").unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::PascalCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".cpp".to_string()]),
-        false,
-        false,
-        String::new(),
-        String::new(),
-        Some("My".to_string()), // Strip "My" prefix
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".cpp".to_string()],
+        recursive: false,
+        strip_prefix: Some("My".to_string()),
+        ..ConvertOptions::new(CaseFormat::PascalCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -392,23 +300,12 @@ fn test_library_strip_suffix() {
     let test_file = test_dir.join("test.py");
     fs::write(&test_file, "user_name_tmp = 'alice'\nuser_id_tmp = 123").unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::SnakeCase,
-        CaseFormat::CamelCase,
-        Some(vec![".py".to_string()]),
-        false,
-        false,
-        String::new(),
-        String::new(),
-        None,
-        Some("_tmp".to_string()), // Strip "_tmp" suffix
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".py".to_string()],
+        recursive: false,
+        strip_suffix: Some("_tmp".to_string()),
+        ..ConvertOptions::new(CaseFormat::SnakeCase, CaseFormat::CamelCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -438,23 +335,12 @@ fn test_library_replace_prefix() {
     )
     .unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::PascalCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".java".to_string()]),
-        false,
-        false,
-        String::new(),
-        String::new(),
-        None,
-        None,
-        Some("Old".to_string()), // Replace "Old" prefix
-        Some("New".to_string()), // with "New"
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".java".to_string()],
+        recursive: false,
+        replace_prefix: Some(("Old".to_string(), "New".to_string())),
+        ..ConvertOptions::new(CaseFormat::PascalCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();
@@ -479,23 +365,13 @@ fn test_library_strip_and_add_prefix() {
     // Use PascalCase identifiers starting with Old that match the pattern
     fs::write(&test_file, "OldUserName userName;\nOldUserId userId;").unwrap();
 
-    let converter = CaseConverter::new(
-        CaseFormat::PascalCase,
-        CaseFormat::SnakeCase,
-        Some(vec![".c".to_string()]),
-        false,
-        false,
-        "new_".to_string(), // Add "new_" prefix after conversion
-        String::new(),
-        Some("Old".to_string()), // Strip "Old" prefix before conversion
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    let converter = CaseConverter::new(ConvertOptions {
+        file_extensions: vec![".c".to_string()],
+        recursive: false,
+        prefix: "new_".to_string(),
+        strip_prefix: Some("Old".to_string()),
+        ..ConvertOptions::new(CaseFormat::PascalCase, CaseFormat::SnakeCase)
+    })
     .unwrap();
 
     converter.process_directory(&test_dir).unwrap();

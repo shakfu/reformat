@@ -53,6 +53,15 @@ pub fn split_lines(text: &str) -> SplitLines<'_> {
     SplitLines { rest: text }
 }
 
+/// The first line terminator in `text`, or LF if it has none.
+pub fn first_terminator(text: &str) -> &'static str {
+    match split_lines(text).map(|(_, t)| t).find(|t| !t.is_empty()) {
+        Some("\r\n") => "\r\n",
+        Some("\r") => "\r",
+        _ => "\n",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +120,14 @@ mod tests {
         assert_roundtrip("");
         assert_roundtrip("\n");
         assert_roundtrip("a\n\nb");
+    }
+
+    #[test]
+    fn test_first_terminator() {
+        assert_eq!(first_terminator("a\r\nb\n"), "\r\n");
+        assert_eq!(first_terminator("a\rb"), "\r");
+        assert_eq!(first_terminator("a\nb\r\n"), "\n");
+        assert_eq!(first_terminator("no terminator"), "\n");
     }
 
     #[test]

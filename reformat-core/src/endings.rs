@@ -1,7 +1,8 @@
 //! Line ending normalization transformer
 
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
 
 /// Line ending style
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +40,7 @@ impl LineEnding {
 pub struct EndingsOptions {
     /// Target line ending style
     pub style: LineEnding,
-    /// File extensions to process
+    /// File extensions to process; empty matches every file
     pub file_extensions: Vec<String>,
     /// Process directories recursively
     pub recursive: bool,
@@ -83,122 +84,90 @@ impl EndingsNormalizer {
         }
     }
 
-    /// Checks if a file should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        if !path.is_file() {
-            return false;
-        }
-
-        // Skip hidden entries and build/vendor directories (see crate::walk)
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return false;
-        }
-
-        if let Some(ext) = path.extension() {
-            let ext_str = format!(".{}", ext.to_string_lossy());
-            self.options.file_extensions.contains(&ext_str)
-        } else {
-            false
-        }
-    }
-
     /// Normalize line endings in a single file. Returns the number of lines changed.
     pub fn normalize_file(&self, path: &Path) -> crate::Result<usize> {
-        if !self.should_process(path) {
+        if !path.is_file() {
             return Ok(0);
         }
+        crate::step::apply_one(self, &FileTarget::file(path), self.options.dry_run)
+    }
 
-        let bytes = fs::read(path)?;
+    /// Processes a directory or file. Returns (files_changed, endings_changed).
+    pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
+        crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
+    }
 
-        // Detect if file is binary (contains null bytes)
-        if bytes.contains(&0) {
-            return Ok(0);
-        }
-
+    /// Rewrites every line ending in `bytes` to the target style. Returns the
+    /// new bytes and the number of endings that differed.
+    pub fn normalize_bytes(&self, bytes: &[u8]) -> (Vec<u8>, usize) {
         let target = self.options.style;
         let target_bytes = target.as_bytes();
-
-        // Split into lines preserving original endings for counting
         let mut changed = 0usize;
         let mut output: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut i = 0;
 
         while i < bytes.len() {
-            if bytes[i] == b'\r' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    // CRLF
-                    if target != LineEnding::Crlf {
+            let (found, len) = match bytes[i] {
+                b'\r' if bytes.get(i + 1) == Some(&b'\n') => (Some(LineEnding::Crlf), 2),
+                b'\r' => (Some(LineEnding::Cr), 1),
+                b'\n' => (Some(LineEnding::Lf), 1),
+                _ => (None, 1),
+            };
+            match found {
+                Some(ending) => {
+                    if ending != target {
                         changed += 1;
                     }
                     output.extend_from_slice(target_bytes);
-                    i += 2;
-                } else {
-                    // CR only
-                    if target != LineEnding::Cr {
-                        changed += 1;
-                    }
-                    output.extend_from_slice(target_bytes);
-                    i += 1;
                 }
-            } else if bytes[i] == b'\n' {
-                // LF only
-                if target != LineEnding::Lf {
-                    changed += 1;
-                }
-                output.extend_from_slice(target_bytes);
-                i += 1;
-            } else {
-                output.push(bytes[i]);
-                i += 1;
+                None => output.push(bytes[i]),
             }
+            i += len;
         }
 
-        if changed > 0 {
-            if self.options.dry_run {
-                log::info!(
-                    "Would normalize {} line ending(s) in '{}'",
-                    changed,
-                    path.display()
-                );
-            } else {
-                fs::write(path, output)?;
-                log::info!(
-                    "Normalized {} line ending(s) in '{}'",
-                    changed,
-                    path.display()
-                );
-            }
-        }
+        (output, changed)
+    }
+}
 
-        Ok(changed)
+impl ContentStep for EndingsNormalizer {
+    fn name(&self) -> &'static str {
+        "endings"
     }
 
-    /// Processes a directory or file. Returns (files_changed, endings_changed).
-    pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
-        let mut total_files = 0;
-        let mut total_endings = 0;
+    fn accepts(&self, file: &FileTarget) -> bool {
+        crate::step::accepts_by_extension(
+            file,
+            &self.options.file_extensions,
+            self.options.recursive,
+        )
+    }
 
-        if path.is_file() {
-            let endings = self.normalize_file(path)?;
-            if endings > 0 {
-                total_files = 1;
-                total_endings = endings;
-            }
-        } else if path.is_dir() {
-            for entry in crate::walk::walk_files(path, self.options.recursive) {
-                let endings = self.normalize_file(entry.path())?;
-                if endings > 0 {
-                    total_files += 1;
-                    total_endings += endings;
-                }
-            }
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        let (bytes, changed) = self.normalize_bytes(text.as_bytes());
+        // Only CR and LF bytes are rewritten, so the output is still UTF-8.
+        (changed > 0).then(|| {
+            (
+                String::from_utf8(bytes).expect("line endings are ASCII"),
+                changed,
+            )
+        })
+    }
+
+    fn transform_bytes(&self, bytes: &[u8], _file: &FileTarget) -> Option<(Vec<u8>, usize)> {
+        let (out, changed) = self.normalize_bytes(bytes);
+        (changed > 0).then_some((out, changed))
+    }
+
+    fn supports_bytes(&self) -> bool {
+        true
+    }
+
+    fn describe(&self, units: usize, dry_run: bool) -> String {
+        if dry_run {
+            format!("Would normalize {} line ending(s) in", units)
+        } else {
+            format!("Normalized {} line ending(s) in", units)
         }
-
-        Ok((total_files, total_endings))
     }
 }
 

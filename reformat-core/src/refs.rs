@@ -253,16 +253,7 @@ impl ReferenceScanner {
 
     /// Checks if a file should be scanned based on extension
     fn should_scan_file(&self, path: &Path) -> bool {
-        if self.options.extensions.is_empty() {
-            return true;
-        }
-
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let ext_with_dot = format!(".{}", ext);
-            self.options.extensions.iter().any(|e| e == &ext_with_dot)
-        } else {
-            false
-        }
+        crate::step::matches_extension(path, &self.options.extensions)
     }
 
     /// Scans a file for references to moved files using Aho-Corasick for O(n) matching
@@ -534,7 +525,7 @@ impl ReferenceFixer {
 
         let modified = new_content != content;
         if modified {
-            fs::write(path, &new_content)?;
+            crate::step::write_atomic(path, new_content.as_bytes())?;
         }
 
         Ok(FileOutcome {

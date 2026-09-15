@@ -1,0 +1,35 @@
+# Hooks for https://pre-commit.com. They run the `reformat` binary on PATH, so
+# install it first: `cargo install reformat`. `language: rust` cannot be used:
+# pre-commit runs `cargo install --path .`, and this repository's root is a
+# virtual workspace manifest.
+#
+# Each hook rewrites files in place; pre-commit fails the commit when a file
+# changes, so the fix can be reviewed and staged.
+
+- id: reformat-clean
+  name: reformat clean
+  description: Strip trailing whitespace, add a missing final newline, and remove trailing blank lines.
+  entry: "reformat clean --final-newline --trim-blank-lines --hidden --include *"
+  language: system
+  types: [text]
+
+- id: reformat-endings
+  name: reformat endings
+  description: Convert line endings to LF.
+  entry: "reformat endings --style lf --hidden --include *"
+  language: system
+  types: [text]
+
+- id: reformat-editorconfig
+  name: reformat editorconfig
+  description: Apply trim_trailing_whitespace, insert_final_newline and end_of_line from .editorconfig.
+  entry: "reformat editorconfig --hidden"
+  language: system
+  types: [text]
+
+- id: reformat-emojis
+  name: reformat emojis
+  description: Replace task emojis with text and remove other emojis.
+  entry: "reformat emojis --hidden"
+  language: system
+  types: [text]

@@ -34,19 +34,34 @@ pipelines, or called directly as a Rust library from `reformat-core`.
 | `IndentNormalizer` | `indent` | Convert between tabs and spaces with configurable width, tab-stop-aware |
 | `ContentReplacer` | `replace` | Regex find-and-replace with capture group support, multiple sequential patterns |
 | `HeaderManager` | `header` | Insert or update file headers (license, copyright) with year templating |
+| `StyleStep` | `editorconfig` | Apply `.editorconfig` settings: trailing whitespace, final newline, line endings, and optionally indentation |
 
 All transformers share common behaviours: recursive directory traversal,
-file extension filtering, dry-run mode, and automatic skipping of hidden files
-and build directories (`.git`, `node_modules`, `target`, `dist`, `vendor`,
-`__pycache__`, `venv`, `.venv`, `build`).
+file extension filtering, dry-run mode, and the file selection rules below.
 
-Exclusion is applied while walking, so those subtrees are never descended into.
-A directory you name explicitly is always processed, even if it is hidden --
-`reformat clean ~/.config/nvim` works -- with the exception of the metadata and
-build directories above, which are refused even when named directly.
+### Selecting files
 
-Binary files and files that are not valid UTF-8 are skipped with a warning
-rather than aborting the run.
+Every command that rewrites contents or names accepts one or more paths, and
+these flags:
+
+| Flag | Effect |
+|---|---|
+| `-e, --extensions EXT` | Only these extensions. `py`, `.py` and `.PY` are equivalent |
+| `--include GLOB` | Only files matching a glob (repeatable). Without `-e`, replaces the default extension list, so `--include Makefile` works |
+| `--exclude GLOB` | Skip matching files and directories (repeatable) |
+| `--hidden` | Walk hidden files and directories, such as `.github/` |
+| `--no-ignore` | Ignore `.gitignore` and `.ignore`, and walk `node_modules`, `target`, `dist`, `vendor`, `__pycache__`, `venv`, `.venv` and `build` |
+
+By default, hidden entries, those build directories, and anything matched by
+`.gitignore` are skipped. `.git` is never entered, whatever the flags. Globs
+use `.gitignore` syntax and are matched relative to the directory walked.
+
+A directory you name explicitly is processed even if it is hidden --
+`reformat clean ~/.config/nvim` works. A named build directory needs
+`--no-ignore`. A named hidden file needs `--hidden`.
+
+Binary files are skipped. Files that are not valid UTF-8 are skipped with a
+warning, except by `endings`, which works on bytes.
 
 ### Pipelines: presets and jobs
 
@@ -87,9 +102,9 @@ cat normalize.json | reformat --job - src/
 
 ### Quick processing (default command)
 
-For the common case of cleaning up a directory, `reformat <path>` runs three
-transformations -- rename to lowercase, replace task emojis, strip trailing
-whitespace -- without needing a config file. Add `-r` to recurse.
+For the common case of cleaning up a directory, `reformat <path>` replaces task
+emojis and strips trailing whitespace, without needing a config file. Add `-r`
+to recurse. It does not rename files; use `rename_files` for that.
 
 ### Library-first design
 
@@ -109,17 +124,27 @@ The project is organised as a Cargo workspace:
 - File logging (`--log-file`) keeps full detail with timestamps
 - Dry-run mode on every transformer and every pipeline step, leaving nothing
   behind on disk
-- Non-zero exit status on failure, including a path that does not exist
+- `--diff` prints a unified diff of content changes; `--check` exits 1 when
+  any file would change. Neither writes anything. See [CI and pre-commit](#ci-and-pre-commit)
+- Exit status 0 on success, 1 when `--check` finds changes, 2 on error. A file
+  that cannot be read or written is reported, the run continues, and the exit
+  status is 2
 
 ## Before you run it
 
 Transformations are applied **in place and are not reversible**. `reformat` has
 no undo, and only `group` records what it did.
 
-- Run against a clean working tree, or a backup.
-- Try `--dry-run` (`-d`) first. It reports exactly what would change and writes
-  nothing.
-- Start narrow. `--extensions` and `--glob` limit the blast radius.
+- Run against a clean working tree, or a backup. `rename_files`, `group`,
+  `convert` and `replace` enforce this: they refuse to modify paths with
+  uncommitted changes or untracked files in git, unless given `--allow-dirty`.
+  So do presets and jobs containing those steps. Previews are never refused.
+- Try `--diff` first. It shows exactly what would change and writes nothing.
+- Start narrow. `--extensions`, `--include` and `--exclude` limit the blast
+  radius.
+
+Files are written atomically: the new contents go to a temporary file that is
+renamed over the original, so an interrupted run cannot truncate a file.
 
 ## Caveats
 
@@ -169,37 +194,36 @@ cargo build --release -p reformat
 
 The binary will be at `./target/release/reformat`
 
+### Shell completions and man pages
+
+```bash
+# Completions: bash, zsh, fish, powershell or elvish
+reformat completions zsh > ~/.zfunc/_reformat
+reformat completions bash > ~/.local/share/bash-completion/completions/reformat
+
+# Man pages: one for reformat and one per subcommand
+reformat man --out-dir ~/.local/share/man/man1
+reformat man > reformat.1 && man ./reformat.1
+```
+
 ## Library Usage
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reformat-core = "0.1.8"
+reformat-core = "0.2.0"
 ```
 
 ### Case Conversion
 
 ```rust
-use reformat_core::{CaseConverter, CaseFormat};
+use reformat_core::{CaseConverter, CaseFormat, ConvertOptions};
 
-let converter = CaseConverter::new(
-    CaseFormat::CamelCase,    // from
-    CaseFormat::SnakeCase,    // to
-    None,                     // file_extensions
-    false,                    // recursive
-    false,                    // dry_run
-    String::new(),            // prefix
-    String::new(),            // suffix
-    None,                     // strip_prefix
-    None,                     // strip_suffix
-    None,                     // replace_prefix_from
-    None,                     // replace_prefix_to
-    None,                     // replace_suffix_from
-    None,                     // replace_suffix_to
-    None,                     // glob_pattern
-    None,                     // word_filter
-)?;
+let converter = CaseConverter::new(ConvertOptions {
+    strip_prefix: Some("m_".to_string()),
+    ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+})?;
 
 converter.process_directory(std::path::Path::new("src"))?;
 ```
@@ -230,7 +254,7 @@ options.dry_run = false;
 let processor = CombinedProcessor::new(options);
 let stats = processor.process(std::path::Path::new("src"))?;
 
-println!("Files renamed: {}", stats.files_renamed);
+// Renaming to lowercase is opt-in: options.lowercase_filenames = true.
 println!("Emojis transformed: {} files ({} changes)",
          stats.files_emoji_transformed, stats.emoji_changes);
 println!("Whitespace cleaned: {} files ({} lines)",
@@ -350,9 +374,8 @@ reformat -d <path>
 
 **What it does:**
 
-1. Renames files to lowercase
-2. Transforms task emojis: ✅ → [x], ☐ → [ ]
-3. Removes trailing whitespace
+1. Transforms task emojis: ✅ → [x], ☐ → [ ]
+2. Removes trailing whitespace
 
 **Example:**
 
@@ -370,16 +393,87 @@ reformat README.md
 **Output:**
 
 ```text
-Renamed '/tmp/TestFile.txt' -> '/tmp/testfile.txt'
-Transformed emojis in '/tmp/testfile.txt'
-Cleaned 2 lines in '/tmp/testfile.txt'
+Transformed 1 emoji(s) in '/tmp/TestFile.txt'
+Cleaned 2 lines in '/tmp/TestFile.txt'
 Processed files:
-  - Renamed: 1 file(s)
   - Emoji transformations: 1 file(s) (1 changes)
   - Whitespace cleaned: 1 file(s) (2 lines)
 ```
 
 ## Usage
+
+### CI and pre-commit
+
+`--check` modifies nothing and exits 1 if any file would change. `--diff`
+prints a unified diff of each change and also modifies nothing. They combine,
+and work on every content command, the default command, presets and jobs.
+`--check` also works on `rename_files`.
+
+```bash
+# Fail CI if any file has trailing whitespace or a missing final newline
+reformat clean --check --final-newline .
+
+# Show what a preset would change
+reformat -p normalize --diff src/
+
+# Run on the files a hook passes
+reformat clean --check $(git diff --cached --name-only --diff-filter=d)
+```
+
+In a diff, a carriage return is shown as `\r`, so line-ending changes are
+visible. With `--diff`, log lines go to stderr, so
+`reformat clean --diff . > changes.patch` writes only the diff.
+
+To run reformat from [pre-commit](https://pre-commit.com), install the binary
+(`cargo install reformat`) and add:
+
+```yaml
+repos:
+  - repo: https://github.com/shakfu/reformat
+    rev: v0.2.0
+    hooks:
+      - id: reformat-clean         # trailing whitespace, final newline, trailing blank lines
+      - id: reformat-endings       # LF line endings
+      - id: reformat-editorconfig  # .editorconfig settings
+      - id: reformat-emojis        # task emojis to text, other emojis removed
+```
+
+The hooks run the `reformat` found on PATH (`language: system`). pre-commit's
+`language: rust` cannot build this repository, because its root is a virtual
+workspace manifest. The clean and endings hooks process every text file
+pre-commit passes, hidden ones included.
+
+When several content steps run in one pipeline, each file is read once, every
+step is applied in order, and the file is written once. A dry run, `--check`
+and `--diff` therefore report the combined result of all steps.
+
+### Editors and stdin
+
+`--stdin-filename NAME` reads content from stdin and writes the result to
+stdout, without touching any file. `NAME` decides which steps apply, by
+extension, and which `.editorconfig` section is used. It need not exist.
+
+```bash
+# Format a buffer
+reformat clean --final-newline --stdin-filename src/main.rs < buffer
+
+# Apply a preset or the default command
+reformat -p normalize --stdin-filename notes.md < notes.md
+
+# Exit 1 if the buffer would change; print nothing
+reformat editorconfig --check --stdin-filename a.txt < a.txt
+```
+
+It works with every content command, the default command, presets and jobs.
+
+- `--diff` prints a diff instead of the content.
+- `--check` and `--dry-run` print nothing; `--check` still sets the exit status.
+- Content whose name is not selected is written back unchanged. This covers
+  an extension no step accepts, `--exclude`, and hidden names without
+  `--hidden`.
+- Log lines go to stderr.
+- Steps that rename or move files (`rename`, `group`) are rejected.
+- `--job -` cannot be combined with it, since both read stdin.
 
 ### Case Conversion
 
@@ -439,10 +533,23 @@ Clean only specific file types:
 reformat clean -e .py -e .rs src/
 ```
 
-Clean a single file:
+Clean a single file, or several:
 
 ```bash
-reformat clean myfile.py
+reformat clean myfile.py other.md
+```
+
+Fix the end of each file: add a missing final newline, and remove trailing
+blank lines. Both are off by default:
+
+```bash
+reformat clean --final-newline --trim-blank-lines .
+```
+
+Clean only the top level of a directory:
+
+```bash
+reformat clean --no-recursive src/
 ```
 
 ### Emoji Transformation
@@ -569,6 +676,42 @@ reformat group --strip-prefix --no-interactive templates/
 - `changes.json` - Record of all file operations (for auditing)
 - `fixes.json` - Proposed reference fixes (review before applying)
 
+Apply a reviewed `fixes.json` later:
+
+```bash
+reformat apply_fixes --dry-run fixes.json
+reformat apply_fixes fixes.json
+```
+
+A fix whose recorded text no longer matches the file is skipped.
+
+A `group` step in a preset or job also writes `changes.json`. It takes exactly
+one directory.
+
+### EditorConfig
+
+`reformat editorconfig` applies the settings `.editorconfig` declares for each
+file ([spec](https://spec.editorconfig.org/)):
+
+| Property | Effect |
+|---|---|
+| `trim_trailing_whitespace = true` | Strip trailing whitespace |
+| `insert_final_newline = true` | Add a missing final newline |
+| `end_of_line` | Convert line endings |
+| `indent_style`, `indent_size`, `tab_width` | Convert indentation, only with `--indent` |
+
+```bash
+reformat editorconfig --check .
+reformat editorconfig --diff src/
+reformat editorconfig --indent .
+```
+
+Files are selected by `.editorconfig` sections, so `-e` is not accepted; use
+`--include` and `--exclude`. Indentation is opt-in because `indent_style =
+space` under `[*]` would also rewrite the tabs a `Makefile` needs, unless the
+file has its own section. `insert_final_newline = false` and `charset` are
+ignored.
+
 ### Line Ending Normalization
 
 Normalize line endings across files:
@@ -621,9 +764,16 @@ reformat replace --find "TODO" --replace-with "FIXME" --dry-run src/
 
 # Filter by extension
 reformat replace --find "2024" --replace-with "2025" -e .py src/
-```
 
-For multiple patterns, use a preset (see Presets section below).
+# Several patterns, applied in order: the Nth --find pairs with the Nth --replace-with
+reformat replace -f "old_api\(" --replace-with "new_api(" -f "OldType" --replace-with "NewType" src/
+
+# Plain text, not regex: no escaping, and $ in the replacement is literal
+reformat replace --literal -f "cost(\$1)" --replace-with "price(\$1)" src/
+
+# Case-insensitive
+reformat replace -i -f "todo" --replace-with "TODO" src/
+```
 
 ### File Header Management
 
@@ -645,7 +795,9 @@ reformat header --text "# License" -e .py src/
 
 ### Presets
 
-Define reusable transformation pipelines in a `reformat.json` file in your project root:
+Define reusable transformation pipelines in a `reformat.json` file. The file
+is searched for in the current directory and its parents, then in each target
+path and its parents. `--config FILE` names one explicitly.
 
 ```json
 {
@@ -686,21 +838,26 @@ reformat -p code -d src/
 
 # Run a different preset
 reformat -p templates web/templates/
+
+# List the presets and their steps
+reformat presets
+reformat presets --config ci/reformat.json
 ```
 
 **Available step configuration options:**
 
 | Step | Options |
 |------|---------|
-| `rename` | `case_transform` (lowercase/uppercase/capitalize), `space_replace` (underscore/hyphen), `recursive`, `include_symlinks` |
+| `rename` | `case_transform` (lowercase/uppercase/capitalize), `space_replace` (underscore/hyphen), `file_extensions`, `recursive`, `include_symlinks` |
 | `emojis` | `replace_task_emojis`, `remove_other_emojis`, `file_extensions`, `recursive` |
-| `clean` | `remove_trailing`, `file_extensions`, `recursive` |
+| `clean` | `remove_trailing`, `insert_final_newline`, `trim_trailing_blank_lines`, `file_extensions`, `recursive` |
 | `convert` | `from_format`, `to_format`, `file_extensions`, `recursive`, `prefix`, `suffix`, `glob`, `word_filter` |
 | `group` | `separator`, `min_count`, `strip_prefix`, `from_suffix`, `recursive` |
 | `endings` | `style` (lf/crlf/cr), `file_extensions`, `recursive` |
 | `indent` | `style` (spaces/tabs), `width`, `file_extensions`, `recursive` |
-| `replace` | `patterns` (array of `{find, replace}`), `file_extensions`, `recursive` |
+| `replace` | `patterns` (array of `{find, replace, literal, ignore_case}`; the last two default to false), `file_extensions`, `recursive` |
 | `header` | `text`, `update_year`, `file_extensions`, `recursive` |
+| `editorconfig` | `indent`, `recursive` |
 
 Steps without explicit configuration use sensible defaults.
 
@@ -774,7 +931,7 @@ reformat --job migrate.json --dry-run src/
 
 | | Presets (`-p`) | Jobs (`--job`) |
 |---|---|---|
-| Source | `reformat.json` in project root | Any file or stdin |
+| Source | `reformat.json` (or `--config`) | Any file or stdin |
 | Lifecycle | Reusable, version-controlled | Throwaway, ad-hoc |
 | Use case | Standard project workflows | One-off migrations, scripted transforms |
 
@@ -918,8 +1075,6 @@ reformat group --preview web/templates/
 Example output:
 
 ```text
-Found 2 potential group(s):
-
   wbs (3 files):
     - wbs_create.tmpl
     - wbs_delete.tmpl
@@ -928,6 +1083,8 @@ Found 2 potential group(s):
   work (2 files):
     - work_package_create.tmpl
     - work_package_delete.tmpl
+
+Found 2 potential group(s).
 ```
 
 Group files with hyphen separator:
@@ -990,7 +1147,7 @@ reformat endings -r src/
 Convert to Windows line endings for distribution:
 
 ```bash
-reformat endings --style crlf -r dist/
+reformat endings --style crlf --no-ignore dist/
 ```
 
 ### Indentation Normalization Examples

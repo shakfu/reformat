@@ -30,7 +30,8 @@ pub mod lines;
 pub mod refs;
 pub mod rename;
 pub mod replace;
-pub mod text;
+pub mod step;
+pub mod style;
 pub mod walk;
 pub mod whitespace;
 
@@ -39,7 +40,7 @@ pub use case::CaseFormat;
 pub use changes::{Change, ChangeRecord};
 pub use combined::{CombinedOptions, CombinedProcessor, CombinedStats};
 pub use config::{Preset, ReformatConfig};
-pub use converter::CaseConverter;
+pub use converter::{CaseConverter, ConvertOptions};
 pub use emoji::{EmojiOptions, EmojiTransformer};
 pub use endings::{EndingsNormalizer, EndingsOptions, LineEnding};
 pub use group::{FileGrouper, GroupOptions, GroupResult, GroupStats};
@@ -51,7 +52,9 @@ pub use refs::{
 pub use rename::{
     CaseTransform, FileRenamer, RenameOptions, RenameStats, SpaceReplace, TimestampFormat,
 };
-pub use replace::{ContentReplacer, ReplaceOptions, ReplacePattern, ReplacePatternConfig};
+pub use replace::{ContentReplacer, ReplaceOptions, ReplacePattern};
+pub use step::{apply_to_bytes, ContentStep, FileTarget, RunReport, StepTotals};
+pub use style::{FileStyle, StyleStep};
 pub use whitespace::{WhitespaceCleaner, WhitespaceOptions};
 
 // Re-export Result type

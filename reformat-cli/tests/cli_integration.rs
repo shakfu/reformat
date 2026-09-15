@@ -855,23 +855,17 @@ fn test_cli_combined_default() {
 
     assert!(output.status.success());
 
-    // File should be renamed to lowercase
-    let renamed_file = test_dir.join("testfile.txt");
-    assert!(renamed_file.exists(), "File should be renamed to lowercase");
-
-    // On case-insensitive filesystems (like macOS default), TestFile.txt and testfile.txt
-    // refer to the same file. Check that the actual filename on disk is lowercase.
+    // Names are left alone: lowercasing Cargo.toml or Button.tsx broke builds.
     let entries: Vec<_> = fs::read_dir(&test_dir).unwrap().collect();
     assert_eq!(entries.len(), 1, "Should have exactly one file");
     let actual_name = entries[0].as_ref().unwrap().file_name();
     assert_eq!(
         actual_name.to_str().unwrap(),
-        "testfile.txt",
-        "Filename should be lowercase"
+        "TestFile.txt",
+        "the default command must not rename files"
     );
-
     // Check content transformations
-    let content = fs::read_to_string(&renamed_file).unwrap();
+    let content = fs::read_to_string(&test_file).unwrap();
 
     // Emoji should be transformed
     assert!(content.contains("[x]"), "Emoji should be replaced with [x]");
@@ -914,18 +908,27 @@ fn test_cli_combined_recursive() {
 
     assert!(output.status.success());
 
-    // Both files should be renamed
-    assert!(test_dir.join("file1.txt").exists());
-    assert!(sub_dir.join("file2.md").exists());
+    // Names are left alone. Compare actual names: on a case-insensitive
+    // filesystem `file1.txt` would also resolve to `File1.txt`.
+    let name_in = |dir: &std::path::Path| {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(name_in(&test_dir), ["File1.txt"]);
+    assert_eq!(name_in(&sub_dir), ["File2.md"]);
 
     // Check content transformations for file1
-    let content1 = fs::read_to_string(test_dir.join("file1.txt")).unwrap();
+    let content1 = fs::read_to_string(&file1).unwrap();
     assert!(content1.contains("[x]"));
     assert!(!content1.contains("✅"));
     assert!(!content1.contains("   \n"));
 
     // Check content transformations for file2
-    let content2 = fs::read_to_string(sub_dir.join("file2.md")).unwrap();
+    let content2 = fs::read_to_string(&file2).unwrap();
     assert!(content2.contains("[ ]"));
     assert!(!content2.contains("☐"));
     assert!(!content2.contains("\t\n"));
@@ -1740,4 +1743,223 @@ fn test_cli_header_preserves_shebang() {
     let content = fs::read_to_string(dir.join("a.py")).unwrap();
     assert!(content.starts_with("#!/usr/bin/env python\n"));
     assert!(content.contains("# (c) Acme"));
+}
+
+// ---------------------------------------------------------------------------
+// Regressions for defects found in the 2026-09 review (REVIEW.md, section 1).
+// ---------------------------------------------------------------------------
+
+/// D1: the default command lowercased every file name, breaking builds.
+#[test]
+fn test_cli_default_command_leaves_build_files_alone() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("Cargo.toml"), "[package]  \n").unwrap();
+    fs::write(dir.join("Makefile"), "all:\n").unwrap();
+
+    assert!(run(dir, &["-r", "."]).status.success());
+
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Cargo.toml", "Makefile"]);
+}
+
+/// D2: `recursive` defaulted to true on a plain flag, so it could not be
+/// turned off.
+#[test]
+fn test_cli_no_recursive_limits_to_top_level() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("sub")).unwrap();
+    fs::write(dir.join("a.txt"), "a  \n").unwrap();
+    fs::write(dir.join("sub/b.txt"), "b  \n").unwrap();
+
+    assert!(run(dir, &["clean", "--no-recursive", "."]).status.success());
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "a\n");
+    assert_eq!(fs::read_to_string(dir.join("sub/b.txt")).unwrap(), "b  \n");
+
+    // The last of -r and --no-recursive wins.
+    assert!(run(dir, &["clean", "--no-recursive", "-r", "."])
+        .status
+        .success());
+    assert_eq!(fs::read_to_string(dir.join("sub/b.txt")).unwrap(), "b\n");
+}
+
+/// D3: the emoji booleans could not be disabled, and the README example
+/// `--no-remove-other` was rejected.
+#[test]
+fn test_cli_emoji_flags_can_be_disabled() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    let text = "done \u{2705} launch \u{1F680}\n";
+    fs::write(dir.join("a.md"), text).unwrap();
+
+    let out = run(
+        dir,
+        &["emojis", "--replace-task", "--no-remove-other", "a.md"],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.md")).unwrap(),
+        "done [x] launch \u{1F680}\n"
+    );
+
+    // Task emojis are kept even though their code points fall inside the
+    // ranges --remove-other deletes.
+    fs::write(dir.join("b.md"), text).unwrap();
+    assert!(run(dir, &["emojis", "--no-replace-task", "b.md"])
+        .status
+        .success());
+    assert_eq!(
+        fs::read_to_string(dir.join("b.md")).unwrap(),
+        "done \u{2705} launch \n"
+    );
+}
+
+/// D4: `-e py` without the dot matched nothing and exited 0.
+#[test]
+fn test_cli_extension_without_dot() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("a.py"), "x  \n").unwrap();
+
+    assert!(run(dir, &["clean", "-e", "py", "."]).status.success());
+    assert_eq!(fs::read_to_string(dir.join("a.py")).unwrap(), "x\n");
+}
+
+/// D5: `convert` logged per-file errors and exited 0; `clean` stopped at
+/// the first one. Both now finish the run and exit 2.
+#[cfg(unix)]
+#[test]
+fn test_cli_unreadable_file_fails_after_processing_the_rest() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("a.py"), "some_name = 1  \n").unwrap();
+    fs::write(dir.join("b.py"), "other_name = 2  \n").unwrap();
+    fs::set_permissions(dir.join("a.py"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(dir.join("a.py")).is_ok() {
+        eprintln!("skipping: running with permission to read mode-000 files");
+        return;
+    }
+
+    let convert = run(dir, &["convert", "--from-snake", "--to-camel", "."]);
+    assert_eq!(convert.status.code(), Some(2), "{:?}", convert);
+    assert!(fs::read_to_string(dir.join("b.py"))
+        .unwrap()
+        .contains("otherName"));
+
+    let clean = run(dir, &["clean", "."]);
+    assert_eq!(clean.status.code(), Some(2), "{:?}", clean);
+    assert_eq!(
+        fs::read_to_string(dir.join("b.py")).unwrap(),
+        "otherName = 2\n"
+    );
+
+    fs::set_permissions(dir.join("a.py"), fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// D7: a group step in a pipeline discarded its change record.
+#[test]
+fn test_cli_group_step_in_job_writes_changes_file() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("t")).unwrap();
+    for name in ["x_1.txt", "x_2.txt"] {
+        fs::write(dir.join("t").join(name), "x").unwrap();
+    }
+    fs::write(dir.join("job.json"), r#"{"steps": ["group"]}"#).unwrap();
+
+    let out = run(dir, &["--job", "job.json", "t"]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(dir.join("t/x/x_1.txt").exists());
+    let record = fs::read_to_string(dir.join("changes.json")).unwrap();
+    assert!(record.contains("x_1.txt"), "{}", record);
+}
+
+/// D8: `group` suggested applying fixes later, but no command could.
+#[test]
+fn test_cli_apply_fixes_from_file() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir_all(dir.join("t")).unwrap();
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("t/wbs_a.tmpl"), "x").unwrap();
+    fs::write(dir.join("t/wbs_b.tmpl"), "x").unwrap();
+    fs::write(dir.join("src/main.go"), "load(\"wbs_a.tmpl\")\n").unwrap();
+
+    let out = run(
+        dir,
+        &[
+            "group",
+            "--no-interactive",
+            "--strip-prefix",
+            "--scope",
+            "src",
+            "t",
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert!(dir.join("fixes.json").exists());
+
+    let dry = run(dir, &["apply_fixes", "--dry-run", "fixes.json"]);
+    assert!(dry.status.success());
+    assert_eq!(
+        fs::read_to_string(dir.join("src/main.go")).unwrap(),
+        "load(\"wbs_a.tmpl\")\n"
+    );
+
+    assert!(run(dir, &["apply_fixes", "fixes.json"]).status.success());
+    assert_eq!(
+        fs::read_to_string(dir.join("src/main.go")).unwrap(),
+        "load(\"wbs/a.tmpl\")\n"
+    );
+}
+
+/// D10: `group --preview -r` ignored `-r`.
+#[test]
+fn test_cli_group_preview_recursive() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("sub")).unwrap();
+    fs::write(dir.join("sub/deep_1.txt"), "x").unwrap();
+    fs::write(dir.join("sub/deep_2.txt"), "x").unwrap();
+
+    let flat = run(dir, &["group", "--preview", "."]);
+    assert!(!String::from_utf8_lossy(&flat.stdout).contains("deep"));
+
+    let deep = run(dir, &["group", "--preview", "-r", "."]);
+    assert!(deep.status.success());
+    assert!(String::from_utf8_lossy(&deep.stdout).contains("deep (2 files)"));
+    assert!(dir.join("sub/deep_1.txt").exists(), "preview moved files");
+}
+
+/// Half of a replace-prefix pair used to be accepted and silently ignored.
+#[test]
+fn test_cli_replace_prefix_halves_are_required_together() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("a.py"), "IUserService = 1\n").unwrap();
+
+    let out = run(
+        dir,
+        &[
+            "convert",
+            "--from-pascal",
+            "--to-snake",
+            "--replace-prefix-from",
+            "I",
+            "a.py",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--replace-prefix-to"));
+    assert_eq!(
+        fs::read_to_string(dir.join("a.py")).unwrap(),
+        "IUserService = 1\n"
+    );
 }

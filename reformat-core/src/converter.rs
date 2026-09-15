@@ -2,24 +2,83 @@
 
 use crate::case::CaseFormat;
 use regex::Regex;
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
+
+/// Options for case conversion.
+///
+/// Build with [`ConvertOptions::new`] and struct update syntax:
+///
+/// ```
+/// use reformat_core::{CaseConverter, CaseFormat, ConvertOptions};
+///
+/// let converter = CaseConverter::new(ConvertOptions {
+///     file_extensions: vec![".py".to_string()],
+///     strip_prefix: Some("m_".to_string()),
+///     ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+/// })
+/// .unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct ConvertOptions {
+    /// Case format of the identifiers to convert
+    pub from: CaseFormat,
+    /// Case format to convert them to
+    pub to: CaseFormat,
+    /// File extensions to process; empty matches every file
+    pub file_extensions: Vec<String>,
+    /// Process directories recursively
+    pub recursive: bool,
+    /// Dry run mode (don't modify files)
+    pub dry_run: bool,
+    /// Added to every converted identifier
+    pub prefix: String,
+    /// Added to every converted identifier
+    pub suffix: String,
+    /// Removed before conversion, e.g. `m_` from `m_userName`
+    pub strip_prefix: Option<String>,
+    /// Removed before conversion
+    pub strip_suffix: Option<String>,
+    /// `(from, to)`: a prefix replaced before conversion, e.g. `("I", "Abstract")`
+    pub replace_prefix: Option<(String, String)>,
+    /// `(from, to)`: a suffix replaced before conversion
+    pub replace_suffix: Option<(String, String)>,
+    /// Only process files whose name or relative path matches this glob
+    pub glob: Option<String>,
+    /// Only convert identifiers matching this regex
+    pub word_filter: Option<String>,
+}
+
+impl ConvertOptions {
+    /// Options converting `from` to `to`, with every other setting at its default.
+    pub fn new(from: CaseFormat, to: CaseFormat) -> Self {
+        ConvertOptions {
+            from,
+            to,
+            file_extensions: [
+                ".c", ".h", ".py", ".md", ".js", ".ts", ".java", ".cpp", ".hpp",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            recursive: true,
+            dry_run: false,
+            prefix: String::new(),
+            suffix: String::new(),
+            strip_prefix: None,
+            strip_suffix: None,
+            replace_prefix: None,
+            replace_suffix: None,
+            glob: None,
+            word_filter: None,
+        }
+    }
+}
 
 /// Main converter for transforming case formats in files
 pub struct CaseConverter {
-    from_format: CaseFormat,
-    to_format: CaseFormat,
-    file_extensions: Vec<String>,
-    recursive: bool,
-    dry_run: bool,
-    prefix: String,
-    suffix: String,
-    strip_prefix: Option<String>,
-    strip_suffix: Option<String>,
-    replace_prefix_from: Option<String>,
-    replace_prefix_to: Option<String>,
-    replace_suffix_from: Option<String>,
-    replace_suffix_to: Option<String>,
+    options: ConvertOptions,
     glob_pattern: Option<glob::Pattern>,
     word_filter: Option<Regex>,
     source_pattern: Regex,
@@ -59,69 +118,35 @@ fn build_source_pattern(
 }
 
 impl CaseConverter {
-    /// Creates a new case converter
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        from_format: CaseFormat,
-        to_format: CaseFormat,
-        file_extensions: Option<Vec<String>>,
-        recursive: bool,
-        dry_run: bool,
-        prefix: String,
-        suffix: String,
-        strip_prefix: Option<String>,
-        strip_suffix: Option<String>,
-        replace_prefix_from: Option<String>,
-        replace_prefix_to: Option<String>,
-        replace_suffix_from: Option<String>,
-        replace_suffix_to: Option<String>,
-        glob_pattern: Option<String>,
-        word_filter: Option<String>,
-    ) -> crate::Result<Self> {
-        let file_extensions = file_extensions.unwrap_or_else(|| {
-            [
-                ".c", ".h", ".py", ".md", ".js", ".ts", ".java", ".cpp", ".hpp",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-        });
+    /// Creates a new case converter. Fails if `glob` or `word_filter` is invalid.
+    pub fn new(options: ConvertOptions) -> crate::Result<Self> {
+        fn first(pair: &Option<(String, String)>) -> Option<&str> {
+            pair.as_ref().map(|(from, _)| from.as_str())
+        }
 
-        // The affix options operate on an identifier *after* it has been
-        // matched, so the match itself has to be able to include the affix.
-        // `\b[a-z]+(?:[A-Z]+[a-z0-9]*)+\b` never matches `m_userName` -- and
-        // `userName` inside it has no word boundary before it, `_` being a word
-        // character -- so `--strip-prefix m_`, documented with exactly that
-        // example, silently did nothing. Admit the configured affixes as
-        // optional parts of the match.
+        // The affix options act on an identifier after it has been matched,
+        // so the match must be able to include the affix: `\b[a-z]+...` alone
+        // never matches `m_userName`, since `_` is a word character.
         let source_pattern = Regex::new(&build_source_pattern(
-            from_format,
-            [strip_prefix.as_deref(), replace_prefix_from.as_deref()],
-            [strip_suffix.as_deref(), replace_suffix_from.as_deref()],
+            options.from,
+            [
+                options.strip_prefix.as_deref(),
+                first(&options.replace_prefix),
+            ],
+            [
+                options.strip_suffix.as_deref(),
+                first(&options.replace_suffix),
+            ],
         ))?;
-        let glob_pattern = match glob_pattern {
-            Some(pattern) => Some(glob::Pattern::new(&pattern)?),
-            None => None,
-        };
-        let word_filter = match word_filter {
-            Some(pattern) => Some(Regex::new(&pattern)?),
-            None => None,
-        };
+        let glob_pattern = options
+            .glob
+            .as_deref()
+            .map(glob::Pattern::new)
+            .transpose()?;
+        let word_filter = options.word_filter.as_deref().map(Regex::new).transpose()?;
 
         Ok(CaseConverter {
-            from_format,
-            to_format,
-            file_extensions,
-            recursive,
-            dry_run,
-            prefix,
-            suffix,
-            strip_prefix,
-            strip_suffix,
-            replace_prefix_from,
-            replace_prefix_to,
-            replace_suffix_from,
-            replace_suffix_to,
+            options,
             glob_pattern,
             word_filter,
             source_pattern,
@@ -130,198 +155,137 @@ impl CaseConverter {
 
     /// Converts a single identifier
     fn convert(&self, name: &str) -> String {
-        let mut processed_name = name.to_string();
+        let o = &self.options;
+        let mut processed = name.to_string();
 
-        // Step 1: Strip prefix if specified
-        if let Some(ref strip_pfx) = self.strip_prefix {
-            if processed_name.starts_with(strip_pfx) {
-                processed_name = processed_name[strip_pfx.len()..].to_string();
-            }
-        }
-
-        // Step 2: Strip suffix if specified
-        if let Some(ref strip_sfx) = self.strip_suffix {
-            if processed_name.ends_with(strip_sfx) {
-                processed_name =
-                    processed_name[..processed_name.len() - strip_sfx.len()].to_string();
-            }
-        }
-
-        // Step 3: Replace prefix if specified
-        if let (Some(ref from_pfx), Some(ref to_pfx)) =
-            (&self.replace_prefix_from, &self.replace_prefix_to)
+        if let Some(rest) = o
+            .strip_prefix
+            .as_deref()
+            .and_then(|p| processed.strip_prefix(p))
         {
-            if processed_name.starts_with(from_pfx) {
-                processed_name = format!("{}{}", to_pfx, &processed_name[from_pfx.len()..]);
-            }
+            processed = rest.to_string();
         }
-
-        // Step 4: Replace suffix if specified
-        if let (Some(ref from_sfx), Some(ref to_sfx)) =
-            (&self.replace_suffix_from, &self.replace_suffix_to)
+        if let Some(rest) = o
+            .strip_suffix
+            .as_deref()
+            .and_then(|p| processed.strip_suffix(p))
         {
-            if processed_name.ends_with(from_sfx) {
-                processed_name = format!(
-                    "{}{}",
-                    &processed_name[..processed_name.len() - from_sfx.len()],
-                    to_sfx
-                );
+            processed = rest.to_string();
+        }
+        if let Some((from, to)) = &o.replace_prefix {
+            if let Some(rest) = processed.strip_prefix(from.as_str()) {
+                processed = format!("{}{}", to, rest);
+            }
+        }
+        if let Some((from, to)) = &o.replace_suffix {
+            if let Some(rest) = processed.strip_suffix(from.as_str()) {
+                processed = format!("{}{}", rest, to);
             }
         }
 
-        // Step 5: Apply word filter if provided
         if let Some(ref filter) = self.word_filter {
-            if !filter.is_match(&processed_name) {
-                return name.to_string(); // Return original if filter doesn't match
+            if !filter.is_match(&processed) {
+                return name.to_string();
             }
         }
 
-        // Step 6: Apply case conversion
-        let words = self.from_format.split_words(&processed_name);
-
-        // Step 7: Add prefix/suffix (existing functionality)
-        self.to_format
-            .join_words(&words, &self.prefix, &self.suffix)
+        let words = o.from.split_words(&processed);
+        o.to.join_words(&words, &o.prefix, &o.suffix)
     }
 
     /// Checks if a file matches the glob pattern
     fn matches_glob(&self, filepath: &Path, base_path: &Path) -> bool {
-        if let Some(ref pattern) = self.glob_pattern {
-            // Match against the filename
-            if let Some(filename) = filepath.file_name() {
-                if pattern.matches(filename.to_string_lossy().as_ref()) {
-                    return true;
-                }
-            }
-
-            // Also try matching against the full relative path
-            if let Ok(rel_path) = filepath.strip_prefix(base_path) {
-                if pattern.matches_path(rel_path) {
-                    return true;
-                }
-            }
-
-            false
-        } else {
-            true
-        }
+        let Some(ref pattern) = self.glob_pattern else {
+            return true;
+        };
+        // Match the file name, or the path relative to the directory walked.
+        filepath
+            .file_name()
+            .is_some_and(|name| pattern.matches(name.to_string_lossy().as_ref()))
+            || filepath
+                .strip_prefix(base_path)
+                .is_ok_and(|rel| pattern.matches_path(rel))
     }
 
     /// Processes a single file
     pub fn process_file(&self, filepath: &Path, base_path: &Path) -> crate::Result<()> {
-        // Skip hidden entries and build/vendor directories. Without this the
-        // converter rewrites identifiers inside `node_modules/` and `target/`.
-        if filepath
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return Ok(());
-        }
-
-        // Check file extension
-        let extension = filepath
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{}", e));
-
-        if let Some(ext) = extension {
-            if !self.file_extensions.contains(&ext) {
-                return Ok(());
-            }
-        } else {
-            return Ok(());
-        }
-
-        // Check glob pattern
-        if !self.matches_glob(filepath, base_path) {
-            return Ok(());
-        }
-
-        // Read file content
-        let content = match crate::text::read_text(filepath)? {
-            Some(c) => c,
-            None => return Ok(()),
+        let target = FileTarget {
+            path: filepath.to_path_buf(),
+            root: base_path.to_path_buf(),
+            depth: 0,
         };
-
-        // Replace all matches of the source pattern
-        let modified_content = self
-            .source_pattern
-            .replace_all(&content, |caps: &regex::Captures| self.convert(&caps[0]));
-
-        if content != modified_content {
-            if self.dry_run {
-                log::info!("Would convert '{}'", filepath.display());
-            } else {
-                fs::write(filepath, modified_content.as_ref())?;
-                log::info!("Converted '{}'", filepath.display());
-            }
-        } else if !self.dry_run {
-            log::debug!("No changes needed in '{}'", filepath.display());
-        }
-
+        crate::step::apply_one(self, &target, self.options.dry_run)?;
         Ok(())
     }
 
-    /// Processes a directory or file
+    /// Processes a directory or file.
+    ///
+    /// Every file is attempted; the first per-file error is returned at the end.
     pub fn process_directory(&self, directory_path: &Path) -> crate::Result<()> {
         if !directory_path.exists() {
             anyhow::bail!("path '{}' does not exist", directory_path.display());
         }
-
-        // If it's a single file, process it directly
-        if directory_path.is_file() {
-            if let Some(parent) = directory_path.parent() {
-                self.process_file(directory_path, parent)?;
-            } else {
-                self.process_file(directory_path, Path::new("."))?;
-            }
-            return Ok(());
-        }
-
-        // Otherwise, process directory
-        if !directory_path.is_dir() {
-            anyhow::bail!(
-                "path '{}' is not a directory or file",
-                directory_path.display()
-            );
-        }
-
-        for entry in crate::walk::walk_files(directory_path, self.recursive) {
-            if let Err(e) = self.process_file(entry.path(), directory_path) {
-                log::warn!("Error processing file '{}': {}", entry.path().display(), e);
-            }
-        }
-
+        crate::step::process_path(
+            self,
+            directory_path,
+            self.options.recursive,
+            self.options.dry_run,
+        )?;
         Ok(())
+    }
+}
+
+impl ContentStep for CaseConverter {
+    fn name(&self) -> &'static str {
+        "convert"
+    }
+
+    fn accepts(&self, file: &FileTarget) -> bool {
+        crate::step::accepts_by_extension(
+            file,
+            &self.options.file_extensions,
+            self.options.recursive,
+        ) && self.matches_glob(&file.path, &file.root)
+    }
+
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        let mut count = 0;
+        let modified = self
+            .source_pattern
+            .replace_all(text, |caps: &regex::Captures| {
+                let converted = self.convert(&caps[0]);
+                if converted != caps[0] {
+                    count += 1;
+                }
+                converted
+            });
+        (modified != text).then(|| (modified.into_owned(), count))
+    }
+
+    fn describe(&self, units: usize, dry_run: bool) -> String {
+        if dry_run {
+            format!("Would convert {} identifier(s) in", units)
+        } else {
+            format!("Converted {} identifier(s) in", units)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// `--strip-prefix m_` is documented with exactly this example and used to
     /// do nothing: the candidate pattern could not match `m_userName` at all.
     #[test]
     fn test_strip_prefix_is_matchable() {
-        let converter = CaseConverter::new(
-            CaseFormat::CamelCase,
-            CaseFormat::SnakeCase,
-            Some(vec![".py".to_string()]),
-            false,
-            false,
-            String::new(),
-            String::new(),
-            Some("m_".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let converter = CaseConverter::new(ConvertOptions {
+            file_extensions: vec![".py".to_string()],
+            recursive: false,
+            strip_prefix: Some("m_".to_string()),
+            ..ConvertOptions::new(CaseFormat::CamelCase, CaseFormat::SnakeCase)
+        })
         .unwrap();
 
         // A unique directory per test: these run in parallel, and a shared

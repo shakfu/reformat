@@ -1,8 +1,9 @@
 //! Regex find-and-replace transformer
 
 use regex::Regex;
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
 
 /// A single find-and-replace pattern
 #[derive(Debug, Clone)]
@@ -18,7 +19,7 @@ pub struct ReplacePattern {
 pub struct ReplaceOptions {
     /// Ordered list of patterns to apply
     pub patterns: Vec<ReplacePattern>,
-    /// File extensions to process
+    /// File extensions to process; empty matches every file
     pub file_extensions: Vec<String>,
     /// Process directories recursively
     pub recursive: bool,
@@ -74,113 +75,57 @@ impl ContentReplacer {
         Ok(ContentReplacer { options, compiled })
     }
 
-    /// Checks if a file should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        if !path.is_file() {
-            return false;
-        }
-
-        // Skip hidden entries and build/vendor directories (see crate::walk)
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return false;
-        }
-
-        if let Some(ext) = path.extension() {
-            let ext_str = format!(".{}", ext.to_string_lossy());
-            self.options.file_extensions.contains(&ext_str)
-        } else {
-            false
-        }
-    }
-
     /// Apply all patterns to a single file. Returns number of replacements made.
     pub fn replace_file(&self, path: &Path) -> crate::Result<usize> {
-        if !self.should_process(path) {
+        if !path.is_file() {
             return Ok(0);
         }
-
-        if self.compiled.is_empty() {
-            return Ok(0);
-        }
-
-        let content = match crate::text::read_text(path)? {
-            Some(c) => c,
-            None => return Ok(0),
-        };
-        let mut current = content.clone();
-        let mut total_replacements = 0;
-
-        for cp in &self.compiled {
-            let result = cp.regex.replace_all(&current, cp.replace.as_str());
-            if result != current {
-                // Count individual matches for this pattern
-                let count = cp.regex.find_iter(&current).count();
-                total_replacements += count;
-                current = result.into_owned();
-            }
-        }
-
-        if total_replacements > 0 {
-            if self.options.dry_run {
-                log::info!(
-                    "Would make {} replacement(s) in '{}'",
-                    total_replacements,
-                    path.display()
-                );
-            } else {
-                fs::write(path, &current)?;
-                log::info!(
-                    "Made {} replacement(s) in '{}'",
-                    total_replacements,
-                    path.display()
-                );
-            }
-        }
-
-        Ok(total_replacements)
+        crate::step::apply_one(self, &FileTarget::file(path), self.options.dry_run)
     }
 
     /// Processes a directory or file. Returns (files_changed, total_replacements).
     pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
-        let mut total_files = 0;
+        crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
+    }
+}
+
+impl ContentStep for ContentReplacer {
+    fn name(&self) -> &'static str {
+        "replace"
+    }
+
+    fn accepts(&self, file: &FileTarget) -> bool {
+        !self.compiled.is_empty()
+            && crate::step::accepts_by_extension(
+                file,
+                &self.options.file_extensions,
+                self.options.recursive,
+            )
+    }
+
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        let mut current = text.to_string();
         let mut total_replacements = 0;
 
-        if path.is_file() {
-            let replacements = self.replace_file(path)?;
-            if replacements > 0 {
-                total_files = 1;
-                total_replacements = replacements;
-            }
-        } else if path.is_dir() {
-            for entry in crate::walk::walk_files(path, self.options.recursive) {
-                let replacements = self.replace_file(entry.path())?;
-                if replacements > 0 {
-                    total_files += 1;
-                    total_replacements += replacements;
+        for cp in &self.compiled {
+            let count = cp.regex.find_iter(&current).count();
+            if count > 0 {
+                let result = cp.regex.replace_all(&current, cp.replace.as_str());
+                if result != current {
+                    total_replacements += count;
+                    current = result.into_owned();
                 }
             }
         }
 
-        Ok((total_files, total_replacements))
+        (current != text).then_some((current, total_replacements))
     }
-}
 
-/// Serde-compatible pattern for config deserialization
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct ReplacePatternConfig {
-    pub find: String,
-    pub replace: String,
-}
-
-impl From<ReplacePatternConfig> for ReplacePattern {
-    fn from(cfg: ReplacePatternConfig) -> Self {
-        ReplacePattern {
-            find: cfg.find,
-            replace: cfg.replace,
+    fn describe(&self, units: usize, dry_run: bool) -> String {
+        if dry_run {
+            format!("Would make {} replacement(s) in", units)
+        } else {
+            format!("Made {} replacement(s) in", units)
         }
     }
 }

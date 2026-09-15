@@ -4,8 +4,9 @@
 //! with special handling for task completion emojis.
 
 use regex::Regex;
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
 
 /// Code points replaced with a text equivalent rather than deleted.
 const TASK_EMOJI_CHARS: &str = concat!(
@@ -43,7 +44,7 @@ pub struct EmojiOptions {
     pub replace_task_emojis: bool,
     /// Remove all other emojis
     pub remove_other_emojis: bool,
-    /// File extensions to process
+    /// File extensions to process; empty matches every file
     pub file_extensions: Vec<String>,
     /// Process directories recursively
     pub recursive: bool,
@@ -91,6 +92,14 @@ impl EmojiTransformer {
         // by U+200D ZERO WIDTH JOINER, and removing only the people used to
         // leave the joiners behind as invisible debris. Keycap sequences
         // (`1` + U+FE0F + U+20E3) had the same problem.
+        //
+        // Task emojis sit inside these ranges. When they are not being
+        // replaced they are subtracted, so "keep task emojis" keeps them.
+        let base = if options.replace_task_emojis {
+            EMOJI_BASE.to_string()
+        } else {
+            format!("[{}--[{}]]", EMOJI_BASE, TASK_EMOJI_CHARS)
+        };
         let general_emoji_pattern = Regex::new(&format!(
             concat!(
                 // Keycap sequences first, so the digit is consumed with its mark.
@@ -100,7 +109,7 @@ impl EmojiTransformer {
                 // Joiners and keycap marks orphaned by earlier versions.
                 r"|\x{{200D}}|\x{{20E3}}",
             ),
-            base = EMOJI_BASE,
+            base = base,
             mods = EMOJI_MODIFIERS,
             vs = VARIATION_SELECTORS,
         ))
@@ -116,30 +125,6 @@ impl EmojiTransformer {
     /// Creates a transformer with default options
     pub fn with_defaults() -> Self {
         EmojiTransformer::new(EmojiOptions::default())
-    }
-
-    /// Checks if a file should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        if !path.is_file() {
-            return false;
-        }
-
-        // Skip hidden entries and build/vendor directories (see crate::walk)
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return false;
-        }
-
-        // Check file extension
-        if let Some(ext) = path.extension() {
-            let ext_str = format!(".{}", ext.to_string_lossy());
-            self.options.file_extensions.contains(&ext_str)
-        } else {
-            false
-        }
     }
 
     /// Replace task emojis with text equivalents. Keyed on the base character
@@ -182,85 +167,68 @@ impl EmojiTransformer {
 
     /// Transform emojis in a single file
     pub fn transform_file(&self, path: &Path) -> crate::Result<usize> {
-        if !self.should_process(path) {
+        if !path.is_file() {
             return Ok(0);
         }
-
-        let content = match crate::text::read_text(path)? {
-            Some(c) => c,
-            None => return Ok(0),
-        };
-        let original_content = content.clone();
-
-        let mut modified_content = content;
-        let mut changes = 0;
-
-        // Replace task emojis with text alternatives
-        if self.options.replace_task_emojis {
-            let before = modified_content.clone();
-            let replaced = self
-                .task_emoji_pattern
-                .replace_all(&modified_content, |caps: &regex::Captures| {
-                    self.replace_task_emoji(&caps[0])
-                });
-
-            if replaced != before {
-                // Count the number of replacements made
-                let task_emojis_found = self.task_emoji_pattern.find_iter(&before).count();
-                changes += task_emojis_found;
-                modified_content = replaced.to_string();
-            }
-        }
-
-        // Remove other emojis
-        if self.options.remove_other_emojis {
-            let before = modified_content.clone();
-            let cleaned = self
-                .general_emoji_pattern
-                .replace_all(&modified_content, "");
-            if cleaned != before {
-                // Count the number of emojis removed
-                let emojis_found = self.general_emoji_pattern.find_iter(&before).count();
-                changes += emojis_found;
-                modified_content = cleaned.to_string();
-            }
-        }
-
-        if modified_content != original_content {
-            if self.options.dry_run {
-                log::info!("Would transform emojis in '{}'", path.display());
-            } else {
-                fs::write(path, modified_content)?;
-                log::info!("Transformed emojis in '{}'", path.display());
-            }
-            Ok(changes.max(1))
-        } else {
-            Ok(0)
-        }
+        crate::step::apply_one(self, &FileTarget::file(path), self.options.dry_run)
     }
 
     /// Processes a directory or file
     pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
-        let mut total_files = 0;
-        let mut total_changes = 0;
+        crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
+    }
+}
 
-        if path.is_file() {
-            let changes = self.transform_file(path)?;
-            if changes > 0 {
-                total_files = 1;
-                total_changes = changes;
-            }
-        } else if path.is_dir() {
-            for entry in crate::walk::walk_files(path, self.options.recursive) {
-                let changes = self.transform_file(entry.path())?;
-                if changes > 0 {
-                    total_files += 1;
-                    total_changes += changes;
-                }
+impl ContentStep for EmojiTransformer {
+    fn name(&self) -> &'static str {
+        "emojis"
+    }
+
+    fn accepts(&self, file: &FileTarget) -> bool {
+        crate::step::accepts_by_extension(
+            file,
+            &self.options.file_extensions,
+            self.options.recursive,
+        )
+    }
+
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        let mut modified = text.to_string();
+        let mut changes = 0;
+
+        if self.options.replace_task_emojis {
+            let found = self.task_emoji_pattern.find_iter(&modified).count();
+            if found > 0 {
+                modified = self
+                    .task_emoji_pattern
+                    .replace_all(&modified, |caps: &regex::Captures| {
+                        self.replace_task_emoji(&caps[0])
+                    })
+                    .into_owned();
+                changes += found;
             }
         }
 
-        Ok((total_files, total_changes))
+        if self.options.remove_other_emojis {
+            let found = self.general_emoji_pattern.find_iter(&modified).count();
+            if found > 0 {
+                modified = self
+                    .general_emoji_pattern
+                    .replace_all(&modified, "")
+                    .into_owned();
+                changes += found;
+            }
+        }
+
+        (modified != text).then(|| (modified, changes.max(1)))
+    }
+
+    fn describe(&self, units: usize, dry_run: bool) -> String {
+        if dry_run {
+            format!("Would transform {} emoji(s) in", units)
+        } else {
+            format!("Transformed {} emoji(s) in", units)
+        }
     }
 }
 
@@ -378,6 +346,31 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), "- [x] done\n");
     }
     use std::fs;
+
+    fn apply(options: EmojiOptions, text: &str) -> String {
+        let target = FileTarget::file(Path::new("x.md"));
+        EmojiTransformer::new(options)
+            .transform(text, &target)
+            .map(|(s, _)| s)
+            .unwrap_or_else(|| text.to_string())
+    }
+
+    /// With task replacement off, task emojis used to be deleted anyway,
+    /// because their code points fall inside the decorative ranges.
+    #[test]
+    fn test_task_emojis_survive_when_not_replaced() {
+        let options = EmojiOptions {
+            replace_task_emojis: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            apply(
+                options,
+                "done \u{2705}\u{FE0F} red \u{1F534} launch \u{1F680}\n"
+            ),
+            "done \u{2705}\u{FE0F} red \u{1F534} launch \n"
+        );
+    }
 
     #[test]
     fn test_replace_task_emojis() {

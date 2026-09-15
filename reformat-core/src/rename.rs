@@ -120,7 +120,7 @@ impl FileRenamer {
     }
 
     /// Checks if a path should be processed
-    fn should_process(&self, path: &Path, is_symlink: bool) -> bool {
+    fn should_process(&self, path: &Path, is_symlink: bool, skip_hidden: bool) -> bool {
         // Skip symlinks unless include_symlinks is enabled
         if is_symlink && !self.options.include_symlinks {
             return false;
@@ -132,15 +132,17 @@ impl FileRenamer {
             return false;
         }
 
-        // Skip hidden entries and build/vendor directories.
-        // This checks every path component, not just the filename: the walk
-        // must never reach into `.git`, where renaming `HEAD` or `config`
-        // destroys the repository outright. Renames are not journalled, so
-        // there is nothing to undo it with.
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
+        // Renaming `HEAD` or `config` inside `.git` destroys the repository,
+        // and renames are not journalled, so this is refused unconditionally.
+        if crate::walk::in_git_dir(path) {
+            return false;
+        }
+
+        // Hidden and build-directory names, unless the caller selected them.
+        if skip_hidden
+            && path.file_name().and_then(|n| n.to_str()).is_none_or(|n| {
+                crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS)
+            })
         {
             return false;
         }
@@ -292,8 +294,14 @@ impl FileRenamer {
     }
 
     /// Renames a single file or symlink
+    ///
+    /// Hidden names are skipped. Paths inside `.git` are always refused.
     pub fn rename_file(&self, path: &Path, is_symlink: bool) -> crate::Result<bool> {
-        if !self.should_process(path, is_symlink) {
+        self.rename_one(path, is_symlink, true)
+    }
+
+    fn rename_one(&self, path: &Path, is_symlink: bool, skip_hidden: bool) -> crate::Result<bool> {
+        if !self.should_process(path, is_symlink, skip_hidden) {
             return Ok(false);
         }
 
@@ -382,52 +390,41 @@ impl FileRenamer {
         if path.is_file() || path_is_symlink {
             self.record(self.rename_file(path, path_is_symlink), path, &mut stats);
         } else if path.is_dir() {
-            if self.options.recursive {
-                // Collect all files (and optionally symlinks) first to avoid issues with renaming while iterating
-                let mut files: Vec<(PathBuf, bool)> =
-                    crate::walk::walk_files_and_symlinks(path, true, self.options.include_symlinks)
-                        .collect();
-
-                // Sort by depth (deepest first) to avoid parent directory rename issues
-                files.sort_by_key(|a| std::cmp::Reverse(a.0.components().count()));
-
-                for (file_path, is_symlink) in files {
-                    self.record(
-                        self.rename_file(&file_path, is_symlink),
-                        &file_path,
-                        &mut stats,
-                    );
-                }
-            } else {
-                let include_symlinks = self.options.include_symlinks;
-                let mut files: Vec<(PathBuf, bool)> = fs::read_dir(path)?
-                    .filter_map(|e| e.ok())
-                    .filter_map(|e| {
-                        let path = e.path();
-                        let ft = e.file_type().ok()?;
-                        let is_symlink = ft.is_symlink();
-                        if ft.is_file() || (include_symlinks && is_symlink) {
-                            Some((path, is_symlink))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Sort for consistent processing
-                files.sort_by(|a, b| a.0.cmp(&b.0));
-
-                for (file_path, is_symlink) in files {
-                    self.record(
-                        self.rename_file(&file_path, is_symlink),
-                        &file_path,
-                        &mut stats,
-                    );
-                }
-            }
+            let files = crate::walk::walk_files_and_symlinks(
+                path,
+                self.options.recursive,
+                self.options.include_symlinks,
+            )
+            .collect();
+            return Ok(self.rename_paths(files));
         }
 
         Ok(stats)
+    }
+
+    /// Renames each `(path, is_symlink)` entry, collecting per-file failures.
+    ///
+    /// The caller selects the files, so hidden names are renamed if offered.
+    /// Paths inside `.git` are still refused.
+    ///
+    /// Entries are processed deepest first, then alphabetically, so the order
+    /// is reproducible.
+    pub fn rename_paths(&self, mut files: Vec<(PathBuf, bool)>) -> RenameStats {
+        let mut stats = RenameStats::default();
+        files.sort_by(|a, b| {
+            b.0.components()
+                .count()
+                .cmp(&a.0.components().count())
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        for (file_path, is_symlink) in files {
+            self.record(
+                self.rename_one(&file_path, is_symlink, false),
+                &file_path,
+                &mut stats,
+            );
+        }
+        stats
     }
 
     /// Folds one file's result into the run statistics, logging any failure.
@@ -1522,5 +1519,41 @@ mod tests {
             entries.iter().any(|n| n == "symlink.txt"),
             "Symlink should be renamed to lowercase"
         );
+    }
+
+    /// `rename_paths` renames what the caller selected, hidden names included,
+    /// but never a path inside `.git`.
+    #[test]
+    fn test_rename_paths_selection_and_git_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::create_dir(dir.join(".git")).unwrap();
+        fs::write(dir.join(".git").join("HEAD"), "ref").unwrap();
+        fs::write(dir.join(".Hidden.txt"), "x").unwrap();
+
+        let renamer = FileRenamer::new(RenameOptions {
+            case_transform: CaseTransform::Uppercase,
+            ..Default::default()
+        });
+
+        assert!(!renamer
+            .rename_file(&dir.join(".Hidden.txt"), false)
+            .unwrap());
+
+        let stats = renamer.rename_paths(vec![
+            (dir.join(".git").join("HEAD"), false),
+            (dir.join(".Hidden.txt"), false),
+        ]);
+        assert_eq!(stats.renamed, 1);
+        let names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&".HIDDEN.txt".to_string()), "{:?}", names);
+        let git: Vec<String> = fs::read_dir(dir.join(".git"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(git, ["HEAD"]);
     }
 }

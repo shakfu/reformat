@@ -1,14 +1,24 @@
 //! Configuration file loading for reformat presets.
 //!
-//! Looks for `reformat.json` in the current working directory.
+//! `reformat.json` is found with `--config`, or by searching the current
+//! directory, the target paths, and their ancestors.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use reformat_core::config::{validate_steps, ReformatConfig};
 use reformat_core::Preset;
 
 pub const CONFIG_FILENAME: &str = "reformat.json";
+
+/// Load and parse a config file at `path`.
+pub fn load_config_file(path: &Path) -> anyhow::Result<ReformatConfig> {
+    log::debug!("Loading config from: {}", path.display());
+    let content = fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read {}: {}", path.display(), e))?;
+    serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse {}: {}", path.display(), e))
+}
 
 /// Load and parse `reformat.json` from the given directory.
 /// Returns `None` if the file does not exist.
@@ -17,24 +27,46 @@ pub fn load_config_from(dir: &Path) -> anyhow::Result<Option<ReformatConfig>> {
     if !path.is_file() {
         return Ok(None);
     }
-    log::debug!("Loading config from: {}", path.display());
-    let content = fs::read_to_string(&path)?;
-    let config: ReformatConfig = serde_json::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("failed to parse {}: {}", CONFIG_FILENAME, e))?;
-    Ok(Some(config))
+    load_config_file(&path).map(Some)
 }
 
-/// Load and parse `reformat.json`, searching the current directory and then
-/// each ancestor. Returns `None` if no config file is found.
+/// Finds the config to use, returning its path and contents.
 ///
-/// Only the current directory used to be searched, so running from a
-/// subdirectory of a project found nothing -- despite the documentation
-/// describing the file as living at the project root.
-pub fn load_config() -> anyhow::Result<Option<ReformatConfig>> {
-    let cwd = std::env::current_dir()?;
-    for dir in cwd.ancestors() {
-        if let Some(config) = load_config_from(dir)? {
-            return Ok(Some(config));
+/// `explicit` (from `--config`) wins. Otherwise the current directory and its
+/// ancestors are searched, then each of `paths` and its ancestors. The
+/// current directory comes first so that existing invocations keep the
+/// config they found before target paths were searched.
+pub fn find_config(
+    explicit: Option<&Path>,
+    paths: &[PathBuf],
+) -> anyhow::Result<Option<(PathBuf, ReformatConfig)>> {
+    find_config_in(explicit, &std::env::current_dir()?, paths)
+}
+
+fn find_config_in(
+    explicit: Option<&Path>,
+    cwd: &Path,
+    paths: &[PathBuf],
+) -> anyhow::Result<Option<(PathBuf, ReformatConfig)>> {
+    if let Some(path) = explicit {
+        return Ok(Some((path.to_path_buf(), load_config_file(path)?)));
+    }
+
+    let mut starts = vec![cwd.to_path_buf()];
+    for path in paths {
+        let absolute = cwd.join(path);
+        starts.push(if absolute.is_dir() {
+            absolute
+        } else {
+            absolute.parent().map(Path::to_path_buf).unwrap_or(absolute)
+        });
+    }
+
+    for start in &starts {
+        for dir in start.ancestors() {
+            if let Some(config) = load_config_from(dir)? {
+                return Ok(Some((dir.join(CONFIG_FILENAME), config)));
+            }
         }
     }
     Ok(None)
@@ -163,5 +195,53 @@ mod tests {
         let config: ReformatConfig = serde_json::from_str(json).unwrap();
         let err = get_preset(&config, "bad").unwrap_err();
         assert!(err.to_string().contains("unknown step 'nope'"));
+    }
+
+    #[test]
+    fn test_find_config_searches_target_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let nested = project.join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            project.join("reformat.json"),
+            r#"{"p": {"steps": ["clean"]}}"#,
+        )
+        .unwrap();
+
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+
+        let (path, config) = find_config_in(None, &elsewhere, &[nested.join("a.rs")])
+            .unwrap()
+            .unwrap();
+        assert_eq!(path, project.join("reformat.json"));
+        assert!(config.contains_key("p"));
+
+        // The working directory's config comes first.
+        fs::write(
+            elsewhere.join("reformat.json"),
+            r#"{"q": {"steps": ["clean"]}}"#,
+        )
+        .unwrap();
+        let (path, _) = find_config_in(None, &elsewhere, &[nested])
+            .unwrap()
+            .unwrap();
+        assert_eq!(path, elsewhere.join("reformat.json"));
+    }
+
+    #[test]
+    fn test_explicit_config_wins_and_must_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("custom.json");
+        fs::write(&file, r#"{"mine": {"steps": ["clean"]}}"#).unwrap();
+
+        let (path, config) = find_config(Some(&file), &[]).unwrap().unwrap();
+        assert_eq!(path, file);
+        assert!(config.contains_key("mine"));
+
+        let missing = tmp.path().join("missing.json");
+        let err = find_config(Some(&missing), &[]).unwrap_err().to_string();
+        assert!(err.contains("missing.json"), "{}", err);
     }
 }

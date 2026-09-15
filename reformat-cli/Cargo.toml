@@ -26,5 +26,13 @@ log.workspace = true
 simplelog.workspace = true
 logging_timer.workspace = true
 
+# File selection, diffs, EditorConfig, completions and the man page.
+# CLI-only: `ignore` needs Rust 1.88, above the library's floor.
+ignore = "0.4"
+similar = "2"
+ec4rs = "1"
+clap_complete = "4"
+clap_mangen = "0.3"
+
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -1,8 +1,9 @@
 //! File header management transformer
 
 use regex::Regex;
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
 
 /// Options for header management
 #[derive(Debug, Clone)]
@@ -11,7 +12,7 @@ pub struct HeaderOptions {
     pub text: String,
     /// If true, replace {year} in the header text with the current year
     pub update_year: bool,
-    /// File extensions to process
+    /// File extensions to process; empty matches every file
     pub file_extensions: Vec<String>,
     /// Process directories recursively
     pub recursive: bool,
@@ -37,6 +38,8 @@ impl Default for HeaderOptions {
     }
 }
 
+const BOM: &str = "\u{FEFF}";
+
 /// File header manager: insert or update headers at the top of source files
 pub struct HeaderManager {
     options: HeaderOptions,
@@ -56,21 +59,16 @@ impl HeaderManager {
             options.text.clone()
         };
 
-        // Build a detector regex: escape the header text but replace any 4-digit year
-        // with \d{4} so we can find year-variant headers
+        // Escape the header, then let any year and any line terminator vary,
+        // so a header from a previous year or in a CRLF file is recognised.
+        // `\d{2}` is a quantifier; escaping its braces matched a literal "{2}".
         let header_detector =
             if !resolved_header.is_empty() {
                 let escaped = regex::escape(&resolved_header);
-                // Replace any 4-digit year (19xx or 20xx) with a flexible year
-                // pattern, so a header written in a previous year is still
-                // recognised. Note `\d{2}` here is a quantifier: escaping the
-                // braces (`\d\{2\}`) made this match a literal "{2}", so the
-                // substitution never fired and year updates silently inserted
-                // a second header instead of replacing the first.
                 let flexible = Regex::new(r"(?:19|20)\d{2}")
                     .unwrap()
                     .replace_all(&escaped, r"\d{4}")
-                    .to_string();
+                    .replace('\n', r"(?:\r\n|\n|\r)");
                 Some(Regex::new(&flexible).map_err(|e| {
                     anyhow::anyhow!("failed to compile header detection regex: {}", e)
                 })?)
@@ -97,127 +95,95 @@ impl HeaderManager {
         pos + (rest.len() - trimmed.len())
     }
 
-    /// Checks if a file should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        if !path.is_file() {
-            return false;
-        }
-
-        // Skip hidden entries and build/vendor directories (see crate::walk)
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return false;
-        }
-
-        if let Some(ext) = path.extension() {
-            let ext_str = format!(".{}", ext.to_string_lossy());
-            self.options.file_extensions.contains(&ext_str)
-        } else {
-            false
-        }
-    }
-
     /// Process a single file. Returns true if the file was modified (or would be in dry-run).
     pub fn process_file(&self, path: &Path) -> crate::Result<bool> {
-        if !self.should_process(path) {
+        if !path.is_file() {
             return Ok(false);
         }
-
-        if self.resolved_header.is_empty() {
-            return Ok(false);
-        }
-
-        let content = match crate::text::read_text(path)? {
-            Some(c) => c,
-            None => return Ok(false),
-        };
-
-        // Check if header already exists (possibly with a different year).
-        // Detection is anchored to the header zone -- the top of the file,
-        // after any shebang and leading blank lines -- so that a year-variant
-        // string elsewhere in the body (a test fixture, a vendored blob) is
-        // not mistaken for this file's own header and rewritten.
-        let zone = Self::header_zone(&content);
-        if let Some(ref detector) = self.header_detector {
-            if let Some(m) = detector
-                .find_at(&content, zone)
-                .filter(|m| m.start() == zone)
-            {
-                // Header exists -- check if it needs a year update
-                let existing = &content[m.start()..m.end()];
-                if existing == self.resolved_header {
-                    // Exact match, nothing to do
-                    return Ok(false);
-                }
-
-                // Replace old header with new one (year update)
-                let new_content = format!("{}{}", self.resolved_header, &content[m.end()..]);
-                // Preserve content before the header (e.g., shebang lines)
-                let prefix = &content[..m.start()];
-                let full = format!("{}{}", prefix, new_content);
-
-                if self.options.dry_run {
-                    log::info!("Would update header in '{}'", path.display());
-                } else {
-                    fs::write(path, &full)?;
-                    log::info!("Updated header in '{}'", path.display());
-                }
-                return Ok(true);
-            }
-        }
-
-        // Header doesn't exist -- insert it
-        // Preserve shebang lines (e.g., #!/usr/bin/env python)
-        let (prefix, rest) = if content.starts_with("#!") {
-            if let Some(pos) = content.find('\n') {
-                (&content[..=pos], &content[pos + 1..])
-            } else {
-                (content.as_str(), "")
-            }
-        } else {
-            ("", content.as_str())
-        };
-
-        let new_content = if prefix.is_empty() {
-            format!("{}\n\n{}", self.resolved_header, rest)
-        } else {
-            format!("{}{}\n\n{}", prefix, self.resolved_header, rest)
-        };
-
-        if self.options.dry_run {
-            log::info!("Would insert header in '{}'", path.display());
-        } else {
-            fs::write(path, &new_content)?;
-            log::info!("Inserted header in '{}'", path.display());
-        }
-
-        Ok(true)
+        Ok(crate::step::apply_one(self, &FileTarget::file(path), self.options.dry_run)? > 0)
     }
 
-    /// Processes a directory or file. Returns (files_changed, operation_description).
+    /// Processes a directory or file. Returns (files_changed, files_changed).
     pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
-        let mut total_files = 0;
-        // We use the second value as "operations" (1 per file touched)
-        let mut total_ops = 0;
+        crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
+    }
+}
 
-        if path.is_file() {
-            if self.process_file(path)? {
-                total_files = 1;
-                total_ops = 1;
-            }
-        } else if path.is_dir() {
-            for entry in crate::walk::walk_files(path, self.options.recursive) {
-                if self.process_file(entry.path())? {
-                    total_files += 1;
-                    total_ops += 1;
+impl ContentStep for HeaderManager {
+    fn name(&self) -> &'static str {
+        "header"
+    }
+
+    fn accepts(&self, file: &FileTarget) -> bool {
+        !self.resolved_header.is_empty()
+            && crate::step::accepts_by_extension(
+                file,
+                &self.options.file_extensions,
+                self.options.recursive,
+            )
+    }
+
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        // A byte-order mark must stay the first thing in the file.
+        let (bom, content) = match text.strip_prefix(BOM) {
+            Some(rest) => (BOM, rest),
+            None => ("", text),
+        };
+        // The header is written with the file's own terminator, so a CRLF
+        // file does not gain LF lines.
+        let newline = crate::lines::first_terminator(content);
+        let header = self.resolved_header.replace('\n', newline);
+
+        // Detection is anchored to the header zone, so a year-variant string
+        // elsewhere in the body is not mistaken for this file's header.
+        let zone = Self::header_zone(content);
+        if let Some(ref detector) = self.header_detector {
+            if let Some(m) = detector
+                .find_at(content, zone)
+                .filter(|m| m.start() == zone)
+            {
+                if m.as_str() == header {
+                    return None;
                 }
+                let updated = format!(
+                    "{}{}{}{}",
+                    bom,
+                    &content[..m.start()],
+                    header,
+                    &content[m.end()..]
+                );
+                return Some((updated, 1));
             }
         }
 
-        Ok((total_files, total_ops))
+        // Insert after a shebang line, if there is one.
+        let split = if content.starts_with("#!") {
+            content
+                .find('\n')
+                .map(|pos| pos + 1)
+                .unwrap_or(content.len())
+        } else {
+            0
+        };
+        let (prefix, rest) = content.split_at(split);
+        let prefix_newline = if !prefix.is_empty() && !prefix.ends_with('\n') {
+            newline
+        } else {
+            ""
+        };
+        let updated = format!(
+            "{}{}{}{}{}{}{}",
+            bom, prefix, prefix_newline, header, newline, newline, rest
+        );
+        Some((updated, 1))
+    }
+
+    fn describe(&self, _units: usize, dry_run: bool) -> String {
+        if dry_run {
+            "Would update header in".to_string()
+        } else {
+            "Updated header in".to_string()
+        }
     }
 }
 
@@ -547,5 +513,43 @@ mod tests {
         assert!(content.starts_with(
             "// Copyright 2025 TestCorp\n// Licensed under MIT\n// All rights reserved\n\n"
         ));
+    }
+
+    fn apply(text: &str, header: &str) -> String {
+        let manager = HeaderManager::new(HeaderOptions {
+            text: header.to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let target = FileTarget::file(Path::new("x.rs"));
+        manager
+            .transform(text, &target)
+            .map(|(s, _)| s)
+            .unwrap_or_else(|| text.to_string())
+    }
+
+    /// Inserting before a BOM moved it mid-file, where compilers reject it.
+    #[test]
+    fn test_header_goes_after_byte_order_mark() {
+        let out = apply("\u{FEFF}int x;\n", "// H");
+        assert_eq!(out, "\u{FEFF}// H\n\nint x;\n");
+        assert_eq!(apply(&out, "// H"), out, "a second run must change nothing");
+    }
+
+    /// A CRLF file used to gain LF separators, leaving mixed line endings.
+    #[test]
+    fn test_header_uses_file_line_terminator() {
+        let out = apply("int x;\r\nint y;\r\n", "// A\n// B");
+        assert_eq!(out, "// A\r\n// B\r\n\r\nint x;\r\nint y;\r\n");
+        assert_eq!(
+            apply(&out, "// A\n// B"),
+            out,
+            "a second run must change nothing"
+        );
+    }
+
+    #[test]
+    fn test_shebang_without_trailing_newline() {
+        assert_eq!(apply("#!/bin/sh", "# H"), "#!/bin/sh\n# H\n\n");
     }
 }

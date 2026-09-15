@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::step::FileTarget;
 use crate::{
-    CaseTransform, EmojiOptions, EmojiTransformer, FileRenamer, RenameOptions, WhitespaceCleaner,
-    WhitespaceOptions,
+    CaseTransform, ContentStep, EmojiOptions, EmojiTransformer, FileRenamer, RenameOptions,
+    WhitespaceCleaner, WhitespaceOptions,
 };
 
 /// Options for combined processing
@@ -14,6 +15,9 @@ pub struct CombinedOptions {
     pub recursive: bool,
     /// Dry run mode (don't modify files)
     pub dry_run: bool,
+    /// Also rename files to lowercase. Off by default: lowercasing
+    /// `Cargo.toml`, `Makefile` or `Button.tsx` breaks builds and imports.
+    pub lowercase_filenames: bool,
 }
 
 impl Default for CombinedOptions {
@@ -21,6 +25,7 @@ impl Default for CombinedOptions {
         CombinedOptions {
             recursive: true,
             dry_run: false,
+            lowercase_filenames: false,
         }
     }
 }
@@ -43,38 +48,40 @@ pub struct CombinedStats {
 /// Combined processor that applies multiple transformations in a single pass
 pub struct CombinedProcessor {
     options: CombinedOptions,
-    rename_options: RenameOptions,
-    emoji_options: EmojiOptions,
-    whitespace_options: WhitespaceOptions,
+    renamer: Option<FileRenamer>,
+    emojis: EmojiTransformer,
+    whitespace: WhitespaceCleaner,
 }
 
 impl CombinedProcessor {
     /// Creates a new combined processor with the given options
     pub fn new(options: CombinedOptions) -> Self {
-        let rename_options = RenameOptions {
-            case_transform: CaseTransform::Lowercase,
-            recursive: options.recursive,
-            dry_run: options.dry_run,
-            ..Default::default()
-        };
+        let renamer = options.lowercase_filenames.then(|| {
+            FileRenamer::new(RenameOptions {
+                case_transform: CaseTransform::Lowercase,
+                recursive: options.recursive,
+                dry_run: options.dry_run,
+                ..Default::default()
+            })
+        });
 
-        let emoji_options = EmojiOptions {
+        let emojis = EmojiTransformer::new(EmojiOptions {
             recursive: options.recursive,
             dry_run: options.dry_run,
             ..Default::default()
-        };
+        });
 
-        let whitespace_options = WhitespaceOptions {
+        let whitespace = WhitespaceCleaner::new(WhitespaceOptions {
             recursive: options.recursive,
             dry_run: options.dry_run,
             ..Default::default()
-        };
+        });
 
         CombinedProcessor {
             options,
-            rename_options,
-            emoji_options,
-            whitespace_options,
+            renamer,
+            emojis,
+            whitespace,
         }
     }
 
@@ -83,24 +90,30 @@ impl CombinedProcessor {
         CombinedProcessor::new(CombinedOptions::default())
     }
 
+    /// The content steps this processor applies, in order.
+    pub fn content_steps(&self) -> [&dyn ContentStep; 2] {
+        [&self.emojis, &self.whitespace]
+    }
+
     /// Processes a directory or file with all transformations
     pub fn process(&self, path: &Path) -> crate::Result<CombinedStats> {
         let mut stats = CombinedStats::default();
 
         if path.is_file() {
-            self.process_single_file(path, &mut stats)?;
+            let skipped = path.file_name().and_then(|n| n.to_str()).is_none_or(|n| {
+                crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS)
+            });
+            if !skipped {
+                self.process_single_file(path, &mut stats)?;
+            }
         } else if path.is_dir() {
             // Collect every file up front: renaming while iterating would
-            // invalidate the walk. Going through `walk_files` is what prunes
-            // `.git` and friends -- this walked them directly and relied on
-            // each transformer re-checking the whole path.
+            // invalidate the walk.
             let mut files: Vec<PathBuf> = crate::walk::walk_files(path, self.options.recursive)
                 .map(|e| e.path().to_path_buf())
                 .collect();
 
-            // Deepest first, then alphabetically: renaming a file cannot then
-            // invalidate a path still queued behind it, and the order is
-            // reproducible.
+            // Deepest first, then alphabetically, for a reproducible order.
             files.sort_by(|a, b| {
                 b.components()
                     .count()
@@ -118,46 +131,39 @@ impl CombinedProcessor {
 
     /// Processes a single file with all transformations
     fn process_single_file(&self, path: &Path, stats: &mut CombinedStats) -> crate::Result<()> {
-        // Step 1: Rename file (lowercase)
-        // Combined processor only handles regular files, not symlinks
-        let renamer = FileRenamer::new(self.rename_options.clone());
-        let renamed = renamer.rename_file(path, false)?;
-        if renamed {
-            stats.files_renamed += 1;
+        let mut current_path = path.to_path_buf();
+
+        if let Some(ref renamer) = self.renamer {
+            if renamer.rename_file(path, false)? {
+                stats.files_renamed += 1;
+                if !self.options.dry_run {
+                    let lowercase = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?
+                        .to_lowercase();
+                    current_path = path.with_file_name(lowercase);
+                }
+            }
         }
 
-        // Determine the current path (may have been renamed)
-        let current_path = if renamed && !self.options.dry_run {
-            // Calculate the new path after renaming
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
-
-            let lowercase_name = file_name.to_lowercase();
-            let parent = path
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("No parent directory"))?;
-            parent.join(lowercase_name)
-        } else {
-            path.to_path_buf()
+        let target = FileTarget::file(&current_path);
+        let report = crate::step::run_content_steps(
+            &self.content_steps(),
+            [target],
+            self.options.dry_run,
+            &mut |_, _, _| {},
+        );
+        if let Some(first) = report.errors.first() {
+            anyhow::bail!("{}", first);
+        }
+        let [emojis, whitespace] = &report.steps[..] else {
+            unreachable!("two content steps");
         };
-
-        // Step 2: Transform emojis
-        let emoji_transformer = EmojiTransformer::new(self.emoji_options.clone());
-        let emoji_changes = emoji_transformer.transform_file(&current_path)?;
-        if emoji_changes > 0 {
-            stats.files_emoji_transformed += 1;
-            stats.emoji_changes += emoji_changes;
-        }
-
-        // Step 3: Clean whitespace
-        let whitespace_cleaner = WhitespaceCleaner::new(self.whitespace_options.clone());
-        let lines_cleaned = whitespace_cleaner.clean_file(&current_path)?;
-        if lines_cleaned > 0 {
-            stats.files_whitespace_cleaned += 1;
-            stats.whitespace_lines_cleaned += lines_cleaned;
-        }
+        stats.files_emoji_transformed += emojis.files;
+        stats.emoji_changes += emojis.units;
+        stats.files_whitespace_cleaned += whitespace.files;
+        stats.whitespace_lines_cleaned += whitespace.units;
 
         Ok(())
     }
@@ -181,7 +187,10 @@ mod tests {
         let test_file = test_dir.join("TestFile.txt");
         fs::write(&test_file, "Line 1   \nTask done ✅\nLine 3\t\n").unwrap();
 
-        let processor = CombinedProcessor::with_defaults();
+        let processor = CombinedProcessor::new(CombinedOptions {
+            lowercase_filenames: true,
+            ..Default::default()
+        });
         let stats = processor.process(&test_file).unwrap();
 
         // File should be renamed
@@ -247,7 +256,10 @@ mod tests {
         fs::write(&file1, "Text   \n✅ Done\n").unwrap();
         fs::write(&file2, "More text\t\n☐ Todo\n").unwrap();
 
-        let processor = CombinedProcessor::with_defaults();
+        let processor = CombinedProcessor::new(CombinedOptions {
+            lowercase_filenames: true,
+            ..Default::default()
+        });
         let stats = processor.process(&test_dir).unwrap();
 
         // Both files should be processed
@@ -280,6 +292,7 @@ mod tests {
 
         let options = CombinedOptions {
             recursive: false,
+            lowercase_filenames: true,
 
             ..Default::default()
         };
@@ -300,6 +313,32 @@ mod tests {
             actual_name.to_str().unwrap(),
             "File2.txt",
             "Subdirectory file should not be renamed"
+        );
+    }
+
+    /// Lowercasing build manifests and source files broke builds, so the
+    /// default processor leaves names alone.
+    #[test]
+    fn test_default_does_not_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[package]\n").unwrap();
+        fs::write(tmp.path().join("README.md"), "Title  \n").unwrap();
+
+        let stats = CombinedProcessor::with_defaults()
+            .process(tmp.path())
+            .unwrap();
+
+        assert_eq!(stats.files_renamed, 0);
+        let mut names: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Cargo.toml", "README.md"]);
+        assert_eq!(stats.files_whitespace_cleaned, 1);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("README.md")).unwrap(),
+            "Title\n"
         );
     }
 }

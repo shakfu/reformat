@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::case::CaseFormat;
-use crate::converter::CaseConverter;
+use crate::converter::{CaseConverter, ConvertOptions};
 use crate::emoji::EmojiOptions;
 use crate::endings::{EndingsOptions, LineEnding};
 use crate::group::GroupOptions;
@@ -26,7 +26,7 @@ pub type ReformatConfig = HashMap<String, Preset>;
 #[serde(deny_unknown_fields)]
 pub struct Preset {
     /// Ordered list of step names to execute.
-    /// Valid values: "rename", "emojis", "clean", "convert", "group"
+    /// Valid values: see [`VALID_STEPS`].
     pub steps: Vec<String>,
     #[serde(default)]
     pub rename: Option<RenameConfig>,
@@ -46,11 +46,22 @@ pub struct Preset {
     pub replace: Option<ReplaceConfig>,
     #[serde(default)]
     pub header: Option<HeaderConfig>,
+    #[serde(default)]
+    pub editorconfig: Option<EditorConfigConfig>,
 }
 
 /// Valid step names for presets.
 pub const VALID_STEPS: &[&str] = &[
-    "rename", "emojis", "clean", "convert", "group", "endings", "indent", "replace", "header",
+    "rename",
+    "emojis",
+    "clean",
+    "convert",
+    "group",
+    "endings",
+    "indent",
+    "replace",
+    "header",
+    "editorconfig",
 ];
 
 /// Validate that all steps in a preset are recognized.
@@ -86,6 +97,9 @@ pub struct RenameConfig {
     pub replace_suffix: Option<Vec<String>>,
     /// "long" (YYYYMMDD) or "short" (YYMMDD).
     pub timestamp: Option<String>,
+    /// Only rename files with these extensions. Applied by the caller that
+    /// selects files; `RenameOptions` has no extension filter.
+    pub file_extensions: Option<Vec<String>>,
 }
 
 impl RenameConfig {
@@ -138,6 +152,8 @@ pub struct EmojiConfig {
 #[serde(deny_unknown_fields)]
 pub struct CleanConfig {
     pub remove_trailing: Option<bool>,
+    pub insert_final_newline: Option<bool>,
+    pub trim_trailing_blank_lines: Option<bool>,
     pub file_extensions: Option<Vec<String>>,
     pub recursive: Option<bool>,
 }
@@ -198,6 +214,28 @@ pub struct IndentConfig {
 pub struct ReplacePatternEntry {
     pub find: String,
     pub replace: String,
+    /// Match `find` as plain text and insert `replace` without `$` expansion.
+    #[serde(default)]
+    pub literal: bool,
+    /// Match regardless of case.
+    #[serde(default)]
+    pub ignore_case: bool,
+}
+
+impl ReplacePatternEntry {
+    /// The regex pattern this entry describes, with `literal` and
+    /// `ignore_case` folded into `find` and `replace`.
+    pub fn to_pattern(&self) -> ReplacePattern {
+        let (mut find, replace) = if self.literal {
+            (regex::escape(&self.find), self.replace.replace('$', "$$"))
+        } else {
+            (self.find.clone(), self.replace.clone())
+        };
+        if self.ignore_case {
+            find = format!("(?i){}", find);
+        }
+        ReplacePattern { find, replace }
+    }
 }
 
 /// Configuration for the replace step.
@@ -216,6 +254,15 @@ pub struct HeaderConfig {
     pub text: Option<String>,
     pub update_year: Option<bool>,
     pub file_extensions: Option<Vec<String>>,
+    pub recursive: Option<bool>,
+}
+
+/// Configuration for the editorconfig step.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditorConfigConfig {
+    /// Also rewrite indentation from `indent_style` and `tab_width`.
+    pub indent: Option<bool>,
     pub recursive: Option<bool>,
 }
 
@@ -304,6 +351,12 @@ impl CleanConfig {
         if let Some(v) = self.remove_trailing {
             options.remove_trailing = v;
         }
+        if let Some(v) = self.insert_final_newline {
+            options.insert_final_newline = v;
+        }
+        if let Some(v) = self.trim_trailing_blank_lines {
+            options.trim_trailing_blank_lines = v;
+        }
         if let Some(ref v) = self.file_extensions {
             options.file_extensions = v.clone();
         }
@@ -323,8 +376,8 @@ impl ConvertConfig {
         self.to_format.as_deref().and_then(parse_case_format)
     }
 
-    /// Builds the case converter this config describes.
-    pub fn to_converter(&self, dry_run: bool) -> crate::Result<CaseConverter> {
+    /// Builds the case converter options this config describes.
+    pub fn to_options(&self, dry_run: bool) -> crate::Result<ConvertOptions> {
         let from = self
             .parse_from_format()
             .ok_or_else(|| anyhow::anyhow!("convert.from_format is missing or invalid"))?;
@@ -332,23 +385,50 @@ impl ConvertConfig {
             .parse_to_format()
             .ok_or_else(|| anyhow::anyhow!("convert.to_format is missing or invalid"))?;
 
-        CaseConverter::new(
-            from,
-            to,
-            self.file_extensions.clone(),
-            self.recursive.unwrap_or(true),
+        let defaults = ConvertOptions::new(from, to);
+        Ok(ConvertOptions {
+            file_extensions: self
+                .file_extensions
+                .clone()
+                .unwrap_or(defaults.file_extensions.clone()),
+            recursive: self.recursive.unwrap_or(true),
             dry_run,
-            self.prefix.clone().unwrap_or_default(),
-            self.suffix.clone().unwrap_or_default(),
-            self.strip_prefix.clone(),
-            self.strip_suffix.clone(),
-            self.replace_prefix_from.clone(),
-            self.replace_prefix_to.clone(),
-            self.replace_suffix_from.clone(),
-            self.replace_suffix_to.clone(),
-            self.glob.clone(),
-            self.word_filter.clone(),
-        )
+            prefix: self.prefix.clone().unwrap_or_default(),
+            suffix: self.suffix.clone().unwrap_or_default(),
+            strip_prefix: self.strip_prefix.clone(),
+            strip_suffix: self.strip_suffix.clone(),
+            replace_prefix: both(
+                &self.replace_prefix_from,
+                &self.replace_prefix_to,
+                "convert.replace_prefix",
+            )?,
+            replace_suffix: both(
+                &self.replace_suffix_from,
+                &self.replace_suffix_to,
+                "convert.replace_suffix",
+            )?,
+            glob: self.glob.clone(),
+            word_filter: self.word_filter.clone(),
+            ..defaults
+        })
+    }
+
+    /// Builds the case converter this config describes.
+    pub fn to_converter(&self, dry_run: bool) -> crate::Result<CaseConverter> {
+        CaseConverter::new(self.to_options(dry_run)?)
+    }
+}
+
+/// Pairs `{field}_from` and `{field}_to`, which must be given together.
+fn both(
+    from: &Option<String>,
+    to: &Option<String>,
+    field: &str,
+) -> crate::Result<Option<(String, String)>> {
+    match (from, to) {
+        (None, None) => Ok(None),
+        (Some(f), Some(t)) => Ok(Some((f.clone(), t.clone()))),
+        _ => anyhow::bail!("{}_from and {}_to must be given together", field, field),
     }
 }
 
@@ -445,10 +525,7 @@ impl ReplaceConfig {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("replace.patterns is missing"))?
             .iter()
-            .map(|p| ReplacePattern {
-                find: p.find.clone(),
-                replace: p.replace.clone(),
-            })
+            .map(ReplacePatternEntry::to_pattern)
             .collect();
 
         let mut options = ReplaceOptions {
@@ -613,6 +690,48 @@ mod tests {
         assert_eq!(convert.parse_to_format(), Some(CaseFormat::SnakeCase));
         assert_eq!(convert.prefix.as_deref(), Some("pre_"));
         assert_eq!(convert.suffix.as_deref(), Some("_suf"));
+    }
+
+    #[test]
+    fn test_replace_prefix_halves_must_be_paired() {
+        let json = r#"{"p": {"steps": ["convert"], "convert": {
+            "from_format": "camel", "to_format": "snake", "replace_prefix_from": "I"}}}"#;
+        let config: ReformatConfig = serde_json::from_str(json).unwrap();
+        let err = config["p"]
+            .convert
+            .as_ref()
+            .unwrap()
+            .to_options(false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("replace_prefix_to"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_literal_and_ignore_case_patterns() {
+        let entry = |find: &str, replace: &str, literal, ignore_case| ReplacePatternEntry {
+            find: find.to_string(),
+            replace: replace.to_string(),
+            literal,
+            ignore_case,
+        };
+        let apply = |e: ReplacePatternEntry, text: &str| {
+            let p = e.to_pattern();
+            regex::Regex::new(&p.find)
+                .unwrap()
+                .replace_all(text, p.replace.as_str())
+                .into_owned()
+        };
+
+        assert_eq!(
+            apply(entry("a.b(", "$1 x", true, false), "a.b( axb("),
+            "$1 x axb("
+        );
+        assert_eq!(
+            apply(entry("todo", "DONE", false, true), "TODO todo"),
+            "DONE DONE"
+        );
+        assert_eq!(apply(entry("f(", "g(", true, true), "F(1)"), "g(1)");
     }
 
     #[test]

@@ -5,7 +5,124 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-09-15
+
+This release breaks the CLI and the library API. See Changed.
+
+### Changed
+
+- **The default command no longer renames files.** `reformat <path>` now only
+  replaces task emojis and strips trailing whitespace. Lowercasing every name
+  renamed `Cargo.toml`, `Makefile` and `Button.tsx`, which broke builds and
+  imports. Use `rename_files --to-lowercase`, or set
+  `CombinedOptions::lowercase_filenames` in the library.
+- **Exit status is now 0, 1 or 2.** 1 means `--check` found changes; 2 means
+  an error. Errors previously exited 1, which `--check` would have made
+  ambiguous.
+- **A file that cannot be read or written no longer stops the run.** It is
+  reported, the remaining files are processed, and the exit status is 2.
+  Previously `convert` logged the error and exited 0, while the other
+  transformers stopped at the first failure and left the tree half-processed.
+- Directories are walked with the `ignore` crate, so files matched by
+  `.gitignore` are skipped by default. `--no-ignore` restores the old
+  selection.
+- Files are written through a temporary file and a rename, so an interrupted
+  run cannot truncate a file. Symbolic links and permissions are preserved. A
+  file with several hard links is written in place, since a rename would
+  detach it.
+- With `--diff`, log lines go to stderr, so stdout carries only the diff.
+- A closed stdout, as when piping into `head`, ends the run quietly with
+  status 0 instead of an error.
+- Binary files are skipped at debug level rather than with a warning.
+- `rename_files`, `group`, `convert` and `replace` refuse to modify paths
+  with uncommitted changes or untracked files in git, as do presets and jobs
+  containing those steps. `--allow-dirty` overrides. Previews and paths
+  outside a git work tree are unaffected. Reference fixes chosen at `group`'s
+  interactive prompt are checked again before they are applied. `clean` and the other hygiene
+  commands are not guarded, since pre-commit runs them on staged files.
+- Library: an empty `file_extensions` list now matches every file; it
+  previously matched none. Extension matching ignores case and a leading dot.
+  `WhitespaceOptions`, `CleanConfig`, `RenameConfig`, `CombinedOptions` and
+  `Preset` gained fields, so struct literals without `..Default::default()`
+  need updating.
+- Library: `ContentStep::accepts` no longer rejects hidden names, since the
+  caller selects files. The per-transformer `process` and `*_file` methods
+  still skip them. `FileRenamer::rename_file` and the content runner refuse
+  any path inside `.git`; the renamer previously checked only the file name.
+- Library: `CaseConverter::new` takes a `ConvertOptions` struct instead of 15
+  positional arguments, 11 of them strings or optional strings, where a
+  transposed pair compiled silently. Build it with
+  `ConvertOptions { .., ..ConvertOptions::new(from, to) }`. A replace prefix or
+  suffix is now a `(from, to)` pair; a half given alone in a preset is an
+  error rather than ignored.
+- Library: removed `text::read_text` and `ReplacePatternConfig`, both unused.
+  Use `step::run_content_steps` and `config::ReplacePatternEntry`.
+
+### Added
+
+- `--check` and `--diff` on every content command, the default command,
+  presets and jobs. `--check` also works on `rename_files`. Neither writes
+  anything.
+- Commands take several paths: `reformat clean a.py b.md`. Every path is
+  checked before any file is changed.
+- File selection flags on every content command and `rename_files`:
+  `--include GLOB`, `--exclude GLOB`, `--hidden` and `--no-ignore`. Without
+  `-e`, `--include` replaces the default extension list, so extensionless files
+  such as `Makefile` are reachable.
+- `clean --final-newline` and `--trim-blank-lines`, also available as
+  `insert_final_newline` and `trim_trailing_blank_lines` in presets. Both are
+  off by default.
+- `reformat editorconfig` and the `editorconfig` step apply
+  `trim_trailing_whitespace`, `insert_final_newline` and `end_of_line` from
+  `.editorconfig`. Indentation is applied only with `--indent`, because
+  `indent_style = space` under `[*]` would also rewrite the tabs a `Makefile`
+  needs.
+- `--stdin-filename NAME` reads content from stdin and writes the result to
+  stdout, for editor integration. `NAME` selects the steps and the
+  `.editorconfig` section; `--diff` and `--check` work as for files. Works
+  with content commands, the default command, presets and jobs. Library:
+  `apply_to_bytes` runs content steps on in-memory input.
+- `replace` takes `--find` and `--replace-with` repeatedly, pairing them in
+  order, plus `--literal` and `--ignore-case`. Presets accept `literal` and
+  `ignore_case` per pattern. A second pattern previously needed a job file.
+- `reformat.json` is also found from the target paths, not only the current
+  directory, so `reformat -p tidy ../other-project/src` works. `--config
+  FILE` names the file, and `reformat presets` lists presets and their steps.
+- `reformat completions <shell>` prints a completion script for bash, zsh,
+  fish, PowerShell or Elvish. `reformat man` prints the man page, and
+  `--out-dir` writes one page per subcommand.
+- `.pre-commit-hooks.yaml` with `reformat-clean`, `reformat-endings`,
+  `reformat-editorconfig` and `reformat-emojis`. They use `language: system`:
+  pre-commit's Rust support runs `cargo install --path .`, which fails on this
+  repository's virtual workspace root.
+- `reformat apply_fixes <fixes.json>` applies reference fixes recorded by
+  `group`. `group` already told users to apply them later, but no command
+  could.
+- `--no-recursive` on `clean`, `emojis`, `rename_files`, `endings`, `indent`,
+  `replace` and `header`, and `--no-replace-task` and `--no-remove-other` on
+  `emojis`. These options were declared as flags with a `true` default, so they
+  could not be turned off, and the README's `--no-remove-other` example failed.
+- Library: the `ContentStep` trait and `step::run_content_steps`. Consecutive
+  content steps in a pipeline now share one read and one write per file, so a
+  multi-step dry run reports each step against the previous step's output
+  rather than the original file.
+
+### Fixed
+
+- `header` inserted the header before a UTF-8 byte-order mark, moving the mark
+  into the middle of the file. In a CRLF file it inserted LF line breaks,
+  leaving mixed endings, and a multi-line header already written with CRLF
+  endings was not recognised, so a second copy was inserted.
+- `header` on a file whose only line is a shebang with no newline joined the
+  header onto the shebang line.
+- A `group` step in a preset or job discarded its record of moves, so
+  references could not be fixed afterwards. It now writes `changes.json`.
+- `group --preview -r` ignored `-r`.
+- `-e py` without the leading dot matched nothing and exited 0.
+- `emojis` with task replacement off deleted task emojis anyway, because
+  their code points fall inside the decorative ranges that
+  `remove_other_emojis` removes. They are now kept.
+- `convert` now reports how many identifiers it changed.
 
 ### Internal
 

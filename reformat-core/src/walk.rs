@@ -53,6 +53,13 @@ pub fn is_excluded<S: AsRef<str>>(path: &Path, skip_dirs: &[S]) -> bool {
     })
 }
 
+/// Returns true if any component of `path` is `.git`. Such paths are never
+/// modified, whatever the caller selected.
+pub fn in_git_dir(path: &Path) -> bool {
+    path.components()
+        .any(|c| matches!(c, Component::Normal(name) if name == ".git"))
+}
+
 /// Predicate for [`walkdir::IntoIter::filter_entry`], pruning excluded
 /// subtrees *before* descending into them rather than filtering their files
 /// out one by one afterwards.

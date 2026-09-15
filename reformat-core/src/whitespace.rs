@@ -1,14 +1,19 @@
 //! Whitespace cleaning transformer
 
-use std::fs;
 use std::path::Path;
+
+use crate::step::{ContentStep, FileTarget};
 
 /// Options for whitespace cleaning
 #[derive(Debug, Clone)]
 pub struct WhitespaceOptions {
     /// Remove trailing whitespace from lines
     pub remove_trailing: bool,
-    /// File extensions to process
+    /// Append a line terminator to a non-empty file that lacks one
+    pub insert_final_newline: bool,
+    /// Remove whitespace-only lines at the end of the file
+    pub trim_trailing_blank_lines: bool,
+    /// File extensions to process; empty matches every file
     pub file_extensions: Vec<String>,
     /// Process directories recursively
     pub recursive: bool,
@@ -20,6 +25,8 @@ impl Default for WhitespaceOptions {
     fn default() -> Self {
         WhitespaceOptions {
             remove_trailing: true,
+            insert_final_newline: false,
+            trim_trailing_blank_lines: false,
             file_extensions: vec![
                 ".py", ".pyx", ".pxd", ".pxi", ".c", ".h", ".cpp", ".hpp", ".rs", ".go", ".java",
                 ".js", ".ts", ".jsx", ".tsx", ".md", ".qmd", ".txt",
@@ -51,98 +58,76 @@ impl WhitespaceCleaner {
         }
     }
 
-    /// Checks if a file should be processed
-    fn should_process(&self, path: &Path) -> bool {
-        if !path.is_file() {
-            return false;
-        }
-
-        // Skip hidden entries and build/vendor directories (see crate::walk)
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
-        {
-            return false;
-        }
-
-        // Check file extension
-        if let Some(ext) = path.extension() {
-            let ext_str = format!(".{}", ext.to_string_lossy());
-            self.options.file_extensions.contains(&ext_str)
-        } else {
-            false
-        }
-    }
-
     /// Removes trailing whitespace from a single file
     pub fn clean_file(&self, path: &Path) -> crate::Result<usize> {
-        if !self.should_process(path) {
+        if !path.is_file() {
             return Ok(0);
         }
+        crate::step::apply_one(self, &FileTarget::file(path), self.options.dry_run)
+    }
 
-        let content = match crate::text::read_text(path)? {
-            Some(c) => c,
-            None => return Ok(0),
-        };
-        let mut cleaned_content = String::with_capacity(content.len());
-        let mut modified_count = 0;
+    /// Processes a directory or file
+    pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
+        crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
+    }
+}
 
-        // Split so that each line's terminator stays attached to that line.
-        // Trimming must only touch the body: rejoining with a fixed "\n"
-        // would rewrite a CRLF file as LF as a side effect of stripping
-        // whitespace.
-        for (body, terminator) in crate::lines::split_lines(&content) {
+impl ContentStep for WhitespaceCleaner {
+    fn name(&self) -> &'static str {
+        "clean"
+    }
+
+    fn accepts(&self, file: &FileTarget) -> bool {
+        crate::step::accepts_by_extension(
+            file,
+            &self.options.file_extensions,
+            self.options.recursive,
+        )
+    }
+
+    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+        let mut changed = 0;
+
+        // Each line keeps its own terminator, so a CRLF file stays CRLF.
+        let mut lines: Vec<(&str, &str)> = Vec::new();
+        for (body, terminator) in crate::lines::split_lines(text) {
             let cleaned = if self.options.remove_trailing {
                 body.trim_end()
             } else {
                 body
             };
             if cleaned != body {
-                modified_count += 1;
+                changed += 1;
             }
-            cleaned_content.push_str(cleaned);
-            cleaned_content.push_str(terminator);
+            lines.push((cleaned, terminator));
         }
 
-        if modified_count > 0 {
-            if self.options.dry_run {
-                log::info!(
-                    "Would clean {} lines in '{}'",
-                    modified_count,
-                    path.display()
-                );
-            } else {
-                fs::write(path, cleaned_content)?;
-                log::info!("Cleaned {} lines in '{}'", modified_count, path.display());
+        if self.options.trim_trailing_blank_lines {
+            while lines.last().is_some_and(|(body, _)| body.trim().is_empty()) {
+                lines.pop();
+                changed += 1;
             }
         }
 
-        Ok(modified_count)
-    }
-
-    /// Processes a directory or file
-    pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
-        let mut total_files = 0;
-        let mut total_lines = 0;
-
-        if path.is_file() {
-            let lines = self.clean_file(path)?;
-            if lines > 0 {
-                total_files = 1;
-                total_lines = lines;
-            }
-        } else if path.is_dir() {
-            for entry in crate::walk::walk_files(path, self.options.recursive) {
-                let lines = self.clean_file(entry.path())?;
-                if lines > 0 {
-                    total_files += 1;
-                    total_lines += lines;
+        if self.options.insert_final_newline {
+            if let Some(last) = lines.last_mut() {
+                if last.1.is_empty() {
+                    last.1 = crate::lines::first_terminator(text);
+                    changed += 1;
                 }
             }
         }
 
-        Ok((total_files, total_lines))
+        let output: String = lines.iter().flat_map(|(b, t)| [*b, *t]).collect();
+        (output != text).then_some((output, changed))
+    }
+
+    fn describe(&self, units: usize, dry_run: bool) -> String {
+        if dry_run {
+            format!("Would clean {} lines in", units)
+        } else {
+            format!("Cleaned {} lines in", units)
+        }
     }
 }
 
@@ -371,5 +356,68 @@ mod tests {
 
         assert_eq!(files, 2);
         assert_eq!(lines, 2);
+    }
+
+    fn clean_text(options: WhitespaceOptions, text: &str) -> String {
+        let target = FileTarget::file(Path::new("x.txt"));
+        WhitespaceCleaner::new(options)
+            .transform(text, &target)
+            .map(|(s, _)| s)
+            .unwrap_or_else(|| text.to_string())
+    }
+
+    #[test]
+    fn test_end_of_file_options_are_off_by_default() {
+        let o = WhitespaceOptions::default();
+        assert_eq!(clean_text(o.clone(), "a\n\n\n"), "a\n\n\n");
+        assert_eq!(clean_text(o, "a"), "a");
+    }
+
+    #[test]
+    fn test_insert_final_newline_uses_the_file_terminator() {
+        let o = WhitespaceOptions {
+            insert_final_newline: true,
+            ..Default::default()
+        };
+        assert_eq!(clean_text(o.clone(), "a\nb"), "a\nb\n");
+        assert_eq!(clean_text(o.clone(), "a\r\nb"), "a\r\nb\r\n");
+        assert_eq!(clean_text(o.clone(), "a"), "a\n");
+        assert_eq!(clean_text(o.clone(), "a\n"), "a\n");
+        assert_eq!(clean_text(o, ""), "", "an empty file stays empty");
+    }
+
+    #[test]
+    fn test_trim_trailing_blank_lines() {
+        let o = WhitespaceOptions {
+            trim_trailing_blank_lines: true,
+            ..Default::default()
+        };
+        assert_eq!(clean_text(o.clone(), "a\n\n\n"), "a\n");
+        assert_eq!(clean_text(o.clone(), "a\r\n  \r\n\r\n"), "a\r\n");
+        assert_eq!(clean_text(o.clone(), "a\n\nb\n"), "a\n\nb\n");
+        assert_eq!(clean_text(o, "  \n\n"), "");
+    }
+
+    #[test]
+    fn test_end_of_file_options_combined() {
+        let o = WhitespaceOptions {
+            insert_final_newline: true,
+            trim_trailing_blank_lines: true,
+            ..Default::default()
+        };
+        assert_eq!(clean_text(o.clone(), "a  \n\n   "), "a\n");
+        assert_eq!(clean_text(o, "a\nb  "), "a\nb\n");
+    }
+
+    #[test]
+    fn test_unprefixed_extension_is_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.py");
+        fs::write(&file, "x  \n").unwrap();
+        let cleaner = WhitespaceCleaner::new(WhitespaceOptions {
+            file_extensions: vec!["py".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(cleaner.process(tmp.path()).unwrap(), (1, 1));
     }
 }

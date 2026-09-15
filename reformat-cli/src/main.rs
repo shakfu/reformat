@@ -1,20 +1,24 @@
 mod config;
+mod dirty;
+mod editorconfig;
+mod select;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use log::{debug, info, warn};
 use logging_timer::time;
 use reformat_core::config::{
-    CleanConfig, ConvertConfig, EmojiConfig, EndingsConfig, GroupConfig, HeaderConfig,
-    IndentConfig, RenameConfig, ReplaceConfig, ReplacePatternEntry,
+    CleanConfig, ConvertConfig, EditorConfigConfig, EmojiConfig, EndingsConfig, GroupConfig,
+    HeaderConfig, IndentConfig, RenameConfig, ReplaceConfig, ReplacePatternEntry,
 };
 use reformat_core::{
-    CombinedOptions, CombinedProcessor, ContentReplacer, EmojiTransformer, EndingsNormalizer,
-    FileGrouper, FileRenamer, HeaderManager, IndentNormalizer, ReferenceFixer, ReferenceScanner,
-    ScanOptions, WhitespaceCleaner,
+    ContentStep, EmojiTransformer, EndingsNormalizer, FileGrouper, FileRenamer, FileTarget,
+    FixRecord, HeaderManager, IndentNormalizer, Preset, ReferenceFixer, ReferenceScanner,
+    ScanOptions, StyleStep, WhitespaceCleaner,
 };
 use simplelog::*;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
@@ -23,9 +27,9 @@ use std::path::{Path, PathBuf};
     about = "Code transformation tool for case conversion and cleaning",
     long_about = "A modular code transformation framework.\n\n\
                   Usage:\n\
-                  - reformat <path>: Run all transformations (rename to lowercase, emojis, clean)\n\
-                  - reformat -p <preset> <path>: Run a named preset from reformat.json\n\
-                  - reformat --job <file|-> <path>: Run an ad-hoc job from a file or stdin\n\n\
+                  - reformat <path>...: Replace task emojis and strip trailing whitespace\n\
+                  - reformat -p <preset> <path>...: Run a named preset from reformat.json\n\
+                  - reformat --job <file|-> <path>...: Run an ad-hoc job from a file or stdin\n\n\
                   Commands:\n\
                   - convert: Convert between case formats\n\
                   - clean: Remove trailing whitespace\n\
@@ -35,41 +39,49 @@ use std::path::{Path, PathBuf};
                   - endings: Normalize line endings (LF/CRLF/CR)\n\
                   - indent: Normalize indentation (tabs/spaces)\n\
                   - replace: Regex find-and-replace across files\n\
-                  - header: Insert or update file headers"
+                  - header: Insert or update file headers\n\
+                  - editorconfig: Apply .editorconfig settings\n\
+                  - apply_fixes: Apply reference fixes recorded by group\n\
+                  - presets: List the presets in reformat.json\n\
+                  - completions, man: Print shell completions or the man page\n\n\
+                  Exit status: 0 on success, 1 when --check finds files that would change, \
+                  2 on error."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// The directory or file to process (when no subcommand is specified)
+    /// Files or directories to process (when no subcommand is specified)
     #[arg(value_name = "PATH")]
-    path: Option<PathBuf>,
+    paths: Vec<PathBuf>,
 
     /// Run a named preset from reformat.json
-    #[arg(
-        short = 'p',
-        long = "preset",
-        requires = "path",
-        conflicts_with = "job"
-    )]
+    #[arg(short = 'p', long = "preset", conflicts_with = "job")]
     preset: Option<String>,
 
     /// Run an ad-hoc job from a JSON file (or "-" for stdin)
-    #[arg(
-        short = 'j',
-        long = "job",
-        requires = "path",
-        conflicts_with = "preset"
-    )]
+    #[arg(short = 'j', long = "job", conflicts_with = "preset")]
     job: Option<String>,
 
     /// Process files recursively (when no subcommand is specified)
-    #[arg(short = 'r', long, requires = "path")]
+    #[arg(short = 'r', long)]
     recursive: bool,
 
-    /// Dry run (don't modify files)
-    #[arg(short = 'd', long = "dry-run")]
-    dry_run: bool,
+    /// Config file for -p and `presets` [default: reformat.json in the current
+    /// directory, a target path, or a parent of either]
+    #[arg(long = "config", value_name = "FILE", global = true)]
+    config: Option<PathBuf>,
+
+    /// Let a preset or job with rename, group, convert or replace steps
+    /// modify files that have uncommitted changes
+    #[arg(long = "allow-dirty")]
+    allow_dirty: bool,
+
+    #[command(flatten)]
+    run: RunFlags,
+
+    #[command(flatten)]
+    select: SelectArgs,
 
     /// Enable verbose output (can be used multiple times: -v, -vv, -vvv)
     #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
@@ -82,6 +94,116 @@ struct Cli {
     /// Write logs to file
     #[arg(long = "log-file", global = true)]
     log_file: Option<PathBuf>,
+}
+
+/// Where input comes from, and whether and how changes are written.
+#[derive(Args, Debug, Clone, Default)]
+struct RunFlags {
+    /// Read content from stdin and write the result to stdout. NAME decides
+    /// which steps apply, by extension, and which .editorconfig section is used
+    #[arg(long = "stdin-filename", value_name = "NAME", conflicts_with = "paths")]
+    stdin_filename: Option<PathBuf>,
+
+    /// Dry run: report what would change, modify nothing
+    #[arg(short = 'd', long = "dry-run")]
+    dry_run: bool,
+
+    /// Modify nothing; exit with status 1 if any file would change
+    #[arg(long)]
+    check: bool,
+
+    /// Print a unified diff of content changes; modify nothing
+    #[arg(long)]
+    diff: bool,
+}
+
+impl RunFlags {
+    fn writes(&self) -> bool {
+        !(self.dry_run || self.check || self.diff)
+    }
+
+    /// True when stdout carries data (content or a diff), so log lines must
+    /// go to stderr.
+    fn stdout_is_data(&self) -> bool {
+        self.stdin_filename.is_some() || self.diff
+    }
+
+    fn prefix(&self) -> &'static str {
+        if self.writes() {
+            ""
+        } else {
+            "[DRY-RUN] "
+        }
+    }
+}
+
+/// Which files are offered to a command.
+#[derive(Args, Debug, Clone, Default)]
+struct SelectArgs {
+    /// Only process files matching GLOB (repeatable). Without -e, this
+    /// replaces the default extension list
+    #[arg(long, value_name = "GLOB")]
+    include: Vec<String>,
+
+    /// Skip files and directories matching GLOB (repeatable)
+    #[arg(long, value_name = "GLOB")]
+    exclude: Vec<String>,
+
+    /// Include hidden files and directories (.git is always skipped)
+    #[arg(long)]
+    hidden: bool,
+
+    /// Ignore .gitignore and .ignore files, and walk build directories
+    /// such as node_modules and target
+    #[arg(long = "no-ignore")]
+    no_ignore: bool,
+}
+
+impl SelectArgs {
+    fn selection(&self) -> select::Selection {
+        select::Selection {
+            include: self.include.clone(),
+            exclude: self.exclude.clone(),
+            hidden: self.hidden,
+            no_ignore: self.no_ignore,
+        }
+    }
+}
+
+/// Arguments shared by the commands that rewrite file contents.
+#[derive(Args, Debug)]
+struct Common {
+    /// Files or directories to process
+    #[arg(value_name = "PATH", required_unless_present = "stdin_filename")]
+    paths: Vec<PathBuf>,
+
+    /// File extensions to process (repeatable; the leading dot is optional)
+    #[arg(short = 'e', long = "extensions")]
+    extensions: Option<Vec<String>>,
+
+    #[command(flatten)]
+    run: RunFlags,
+
+    #[command(flatten)]
+    select: SelectArgs,
+}
+
+/// Recursion for commands that recurse by default.
+#[derive(Args, Debug)]
+struct Recursion {
+    /// Process directories recursively (the default)
+    #[arg(short = 'r', long, overrides_with = "no_recursive")]
+    recursive: bool,
+
+    /// Process only the top level of each directory
+    #[arg(long = "no-recursive", overrides_with = "recursive")]
+    no_recursive: bool,
+}
+
+impl Recursion {
+    fn enabled(&self) -> bool {
+        !self.no_recursive
+    }
 }
 
 #[derive(Subcommand)]
@@ -138,20 +260,12 @@ enum Commands {
         #[arg(long = "to-screaming-kebab", group = "to")]
         to_screaming_kebab: bool,
 
-        /// The directory or file to convert
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
 
         /// Convert files recursively
         #[arg(short = 'r', long)]
         recursive: bool,
-
-        /// Dry run the conversion
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
-
-        /// File extensions to process
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
 
         /// Prefix to add to all converted words
         #[arg(long, default_value = "")]
@@ -170,7 +284,7 @@ enum Commands {
         strip_suffix: Option<String>,
 
         /// Replace prefix (from) before conversion (e.g., 'I' in 'IUserService')
-        #[arg(long = "replace-prefix-from")]
+        #[arg(long = "replace-prefix-from", requires = "replace_prefix_to")]
         replace_prefix_from: Option<String>,
 
         /// Replace prefix (to) before conversion (e.g., 'Abstract')
@@ -178,7 +292,7 @@ enum Commands {
         replace_prefix_to: Option<String>,
 
         /// Replace suffix (from) before conversion
-        #[arg(long = "replace-suffix-from")]
+        #[arg(long = "replace-suffix-from", requires = "replace_suffix_to")]
         replace_suffix_from: Option<String>,
 
         /// Replace suffix (to) before conversion
@@ -192,65 +306,62 @@ enum Commands {
         /// Regex pattern to filter which words get converted
         #[arg(long = "word-filter")]
         word_filter: Option<String>,
+
+        /// Modify files even if they have uncommitted changes in git
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
     },
 
     /// Remove trailing whitespace from files
     Clean {
-        /// The directory or file to clean
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
 
-        /// Process files recursively
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
+        #[command(flatten)]
+        recursion: Recursion,
 
-        /// Dry run (don't modify files)
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
+        /// Append a line terminator to files that lack a final newline
+        #[arg(long = "final-newline")]
+        final_newline: bool,
 
-        /// File extensions to process
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
+        /// Remove blank lines at the end of each file
+        #[arg(long = "trim-blank-lines")]
+        trim_blank_lines: bool,
     },
 
     /// Remove or replace emojis with text alternatives
     Emojis {
-        /// The directory or file to process
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
 
-        /// Process files recursively [default: true]
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
+        #[command(flatten)]
+        recursion: Recursion,
 
-        /// Dry run (don't modify files)
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
-
-        /// File extensions to process (default: .md, .txt, and common source files)
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
-
-        /// Replace task completion emojis with text (e.g., ✅ -> [x]) [default: true]
-        #[arg(long = "replace-task", default_value_t = true)]
+        /// Replace task emojis with text, e.g. a check mark with [x] (the default)
+        #[arg(long = "replace-task", overrides_with = "no_replace_task")]
         replace_task: bool,
 
-        /// Remove all other emojis [default: true]
-        #[arg(long = "remove-other", default_value_t = true)]
+        /// Leave task emojis unchanged
+        #[arg(long = "no-replace-task", overrides_with = "replace_task")]
+        no_replace_task: bool,
+
+        /// Remove all other emojis (the default)
+        #[arg(long = "remove-other", overrides_with = "no_remove_other")]
         remove_other: bool,
+
+        /// Leave other emojis unchanged
+        #[arg(long = "no-remove-other", overrides_with = "remove_other")]
+        no_remove_other: bool,
     },
 
     /// Rename files with various transformations
     #[command(name = "rename_files")]
     RenameFiles {
-        /// The directory or file to rename
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
 
-        /// Process directories recursively [default: true]
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
-
-        /// Dry run (don't rename files)
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
+        #[command(flatten)]
+        recursion: Recursion,
 
         /// Include symbolic links in processing
         #[arg(long = "include-symlinks")]
@@ -307,6 +418,10 @@ enum Commands {
         /// Add timestamp prefix in YYMMDD format (e.g., 250915_)
         #[arg(long = "timestamp-short")]
         timestamp_short: bool,
+
+        /// Modify files even if they have uncommitted changes in git
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
     },
 
     /// Group files by common prefix into subdirectories
@@ -364,34 +479,32 @@ enum Commands {
         /// Where to write proposed reference fixes [default: ./fixes.json]
         #[arg(long = "fixes-file")]
         fixes_file: Option<PathBuf>,
+
+        /// Modify files even if they have uncommitted changes in git
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
     },
 
     /// Normalize line endings across files
     Endings {
-        /// The directory or file to process
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
+
+        #[command(flatten)]
+        recursion: Recursion,
 
         /// Target line ending style: lf, crlf, or cr
         #[arg(short = 's', long = "style", default_value = "lf")]
         style: String,
-
-        /// Process files recursively [default: true]
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
-
-        /// Dry run (don't modify files)
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
-
-        /// File extensions to process
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
     },
 
     /// Normalize indentation (convert between tabs and spaces)
     Indent {
-        /// The directory or file to process
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
+
+        #[command(flatten)]
+        recursion: Recursion,
 
         /// Target indent style: spaces or tabs
         #[arg(short = 's', long = "style", default_value = "spaces")]
@@ -400,50 +513,45 @@ enum Commands {
         /// Number of spaces per indent level (or tab width for conversion)
         #[arg(short = 'w', long = "width", default_value_t = 4)]
         width: usize,
-
-        /// Process files recursively [default: true]
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
-
-        /// Dry run (don't modify files)
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
-
-        /// File extensions to process
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
     },
 
     /// Regex find-and-replace across files
     Replace {
-        /// The directory or file to process
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
 
-        /// Find pattern (regex)
-        #[arg(short = 'f', long = "find")]
-        find: String,
+        #[command(flatten)]
+        recursion: Recursion,
 
-        /// Replacement string (supports capture groups: $1, $2, etc.)
-        #[arg(long = "replace-with")]
-        replace_with: String,
+        /// Pattern to find, a regex unless --literal. Repeatable: the Nth
+        /// --find pairs with the Nth --replace-with, applied in order
+        #[arg(short = 'f', long = "find", required = true)]
+        find: Vec<String>,
 
-        /// Process files recursively [default: true]
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
+        /// Replacement for the matching --find (capture groups $1, $2 unless --literal)
+        #[arg(long = "replace-with", required = true)]
+        replace_with: Vec<String>,
 
-        /// Dry run (don't modify files)
-        #[arg(short = 'd', long = "dry-run")]
-        dry_run: bool,
+        /// Match every --find as plain text, and insert replacements without $ expansion
+        #[arg(long)]
+        literal: bool,
 
-        /// File extensions to process
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
+        /// Match regardless of case
+        #[arg(short = 'i', long = "ignore-case")]
+        ignore_case: bool,
+
+        /// Modify files even if they have uncommitted changes in git
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
     },
 
     /// Insert or update file headers (license, copyright, etc.)
     Header {
-        /// The directory or file to process
-        path: PathBuf,
+        #[command(flatten)]
+        common: Common,
+
+        #[command(flatten)]
+        recursion: Recursion,
 
         /// Header text to insert (use \n for newlines)
         #[arg(short = 't', long = "text")]
@@ -452,27 +560,59 @@ enum Commands {
         /// Replace {year} in header text with the current year
         #[arg(long = "update-year")]
         update_year: bool,
+    },
 
-        /// Process files recursively [default: true]
-        #[arg(short = 'r', long, default_value_t = true)]
-        recursive: bool,
+    /// Apply .editorconfig: trim_trailing_whitespace, insert_final_newline, end_of_line
+    Editorconfig {
+        #[command(flatten)]
+        common: Common,
 
-        /// Dry run (don't modify files)
+        #[command(flatten)]
+        recursion: Recursion,
+
+        /// Also rewrite indentation from indent_style and indent_size
+        #[arg(long)]
+        indent: bool,
+    },
+
+    /// List the presets in reformat.json and their steps
+    Presets,
+
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Print the man page, or write one page per command with --out-dir
+    Man {
+        /// Directory to write reformat.1 and a page per subcommand into
+        #[arg(long = "out-dir", value_name = "DIR")]
+        out_dir: Option<PathBuf>,
+    },
+
+    /// Apply the reference fixes recorded by `group` in a fixes file
+    #[command(name = "apply_fixes")]
+    ApplyFixes {
+        /// The fixes file written by `group` (fixes.json)
+        fixes_file: PathBuf,
+
+        /// Show the fixes without applying them
         #[arg(short = 'd', long = "dry-run")]
         dry_run: bool,
-
-        /// File extensions to process
-        #[arg(short = 'e', long = "extensions")]
-        extensions: Option<Vec<String>>,
     },
 }
 
 /// Initialize logging based on verbosity level
-fn init_logging(verbose: u8, quiet: bool, log_file: Option<PathBuf>) -> anyhow::Result<()> {
-    // Transformers report what they touch at `info`. That is the default
-    // level so ordinary runs look the same as before, and `--quiet` now
-    // actually silences them -- previously they were `println!`d straight from
-    // the library, where no CLI flag could reach them.
+fn init_logging(
+    verbose: u8,
+    quiet: bool,
+    log_file: Option<PathBuf>,
+    stderr_only: bool,
+) -> anyhow::Result<()> {
+    // Transformers report each file they touch at `info`, so that is the
+    // default level and `--quiet` silences it.
     let log_level = if quiet {
         LevelFilter::Error
     } else {
@@ -503,7 +643,11 @@ fn init_logging(verbose: u8, quiet: bool, log_file: Option<PathBuf>) -> anyhow::
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![TermLogger::new(
         log_level,
         term_config,
-        TerminalMode::Mixed,
+        if stderr_only {
+            TerminalMode::Stderr
+        } else {
+            TerminalMode::Mixed
+        },
         ColorChoice::Auto,
     )];
 
@@ -543,218 +687,548 @@ fn selected_format(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[time("debug")]
-fn run_convert(
-    from_camel: bool,
-    from_pascal: bool,
-    from_snake: bool,
-    from_screaming_snake: bool,
-    from_kebab: bool,
-    _from_screaming_kebab: bool,
-    to_camel: bool,
-    to_pascal: bool,
-    to_snake: bool,
-    to_screaming_snake: bool,
-    to_kebab: bool,
-    _to_screaming_kebab: bool,
-    path: PathBuf,
-    recursive: bool,
-    dry_run: bool,
-    extensions: Option<Vec<String>>,
-    prefix: String,
-    suffix: String,
-    strip_prefix: Option<String>,
-    strip_suffix: Option<String>,
-    replace_prefix_from: Option<String>,
-    replace_prefix_to: Option<String>,
-    replace_suffix_from: Option<String>,
-    replace_suffix_to: Option<String>,
-    glob: Option<String>,
-    word_filter: Option<String>,
-) -> anyhow::Result<()> {
-    let cfg = ConvertConfig {
-        from_format: Some(
-            selected_format(
-                from_camel,
-                from_pascal,
-                from_snake,
-                from_screaming_snake,
-                from_kebab,
-            )
-            .to_string(),
-        ),
-        to_format: Some(
-            selected_format(to_camel, to_pascal, to_snake, to_screaming_snake, to_kebab)
-                .to_string(),
-        ),
-        file_extensions: extensions,
-        recursive: Some(recursive),
-        prefix: Some(prefix),
-        suffix: Some(suffix),
-        glob,
-        word_filter,
-        strip_prefix,
-        strip_suffix,
-        replace_prefix_from,
-        replace_prefix_to,
-        replace_suffix_from,
-        replace_suffix_to,
-    };
-
-    run_single_step(
-        "convert",
-        reformat_core::Preset {
-            steps: vec!["convert".to_string()],
-            convert: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |_| "Conversion complete".to_string(),
-        "No changes needed",
-    )
+/// What a step did. Steps compute; callers present.
+enum StepOutcome {
+    /// Files touched, plus a step-specific unit count (lines, changes,
+    /// replacements, endings).
+    Counted {
+        files: usize,
+        units: usize,
+    },
+    Renamed(reformat_core::RenameStats),
+    Grouped(reformat_core::GroupStats),
 }
 
-#[time("debug")]
-fn run_clean(
-    path: PathBuf,
-    recursive: bool,
+impl StepOutcome {
+    fn files(&self) -> usize {
+        match self {
+            StepOutcome::Counted { files, .. } => *files,
+            StepOutcome::Renamed(s) => s.renamed,
+            StepOutcome::Grouped(s) => s.files_moved,
+        }
+    }
+}
+
+/// The result of running a pipeline.
+struct Execution {
+    outcomes: Vec<(String, StepOutcome)>,
+    errors: Vec<String>,
+}
+
+/// The paths, flags and file selection a command runs with.
+struct Invocation<'a> {
+    paths: &'a [PathBuf],
+    flags: &'a RunFlags,
+    select: &'a SelectArgs,
+    allow_dirty: bool,
+}
+
+/// Steps whose changes need review, so they refuse uncommitted work.
+const NEEDS_CLEAN_TREE: &[&str] = &["rename", "group", "convert", "replace"];
+
+/// Steps that change paths rather than contents run on their own.
+fn is_content_step(step: &str) -> bool {
+    !matches!(step, "rename" | "group")
+}
+
+/// The `recursive` setting a step's config resolves to. Every step defaults
+/// to recursive when its config leaves it unset.
+fn step_recursive(preset: &Preset, step: &str) -> bool {
+    match step {
+        "rename" => preset.rename.as_ref().and_then(|c| c.recursive),
+        "emojis" => preset.emojis.as_ref().and_then(|c| c.recursive),
+        "clean" => preset.clean.as_ref().and_then(|c| c.recursive),
+        "convert" => preset.convert.as_ref().and_then(|c| c.recursive),
+        "endings" => preset.endings.as_ref().and_then(|c| c.recursive),
+        "indent" => preset.indent.as_ref().and_then(|c| c.recursive),
+        "replace" => preset.replace.as_ref().and_then(|c| c.recursive),
+        "header" => preset.header.as_ref().and_then(|c| c.recursive),
+        "editorconfig" => preset.editorconfig.as_ref().and_then(|c| c.recursive),
+        _ => None,
+    }
+    .unwrap_or(true)
+}
+
+/// With `--include` and no explicit extensions, a step matches any extension:
+/// the globs do the selecting, so `--include Makefile` can reach `Makefile`.
+fn widen_extensions_for_include(preset: &mut Preset) {
+    fn widen(extensions: &mut Option<Vec<String>>) {
+        extensions.get_or_insert_with(Vec::new);
+    }
+    let p = preset;
+    widen(
+        &mut p
+            .emojis
+            .get_or_insert_with(Default::default)
+            .file_extensions,
+    );
+    widen(&mut p.clean.get_or_insert_with(Default::default).file_extensions);
+    widen(
+        &mut p
+            .endings
+            .get_or_insert_with(Default::default)
+            .file_extensions,
+    );
+    widen(
+        &mut p
+            .indent
+            .get_or_insert_with(Default::default)
+            .file_extensions,
+    );
+    widen(
+        &mut p
+            .rename
+            .get_or_insert_with(Default::default)
+            .file_extensions,
+    );
+    if let Some(c) = p.convert.as_mut() {
+        widen(&mut c.file_extensions);
+    }
+    if let Some(c) = p.replace.as_mut() {
+        widen(&mut c.file_extensions);
+    }
+    if let Some(c) = p.header.as_mut() {
+        widen(&mut c.file_extensions);
+    }
+}
+
+/// Builds the content step `step` from its config.
+fn build_content_step(
+    preset: &Preset,
+    step: &str,
     dry_run: bool,
-    extensions: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let cfg = CleanConfig {
-        remove_trailing: Some(true),
-        file_extensions: extensions,
-        recursive: Some(recursive),
+    label: &str,
+) -> anyhow::Result<Box<dyn ContentStep>> {
+    let missing = |what: &str| {
+        anyhow::anyhow!(
+            "{}: '{}' step requires a [{}] config with {}",
+            label,
+            step,
+            step,
+            what
+        )
     };
-    run_single_step(
-        "clean",
-        reformat_core::Preset {
-            steps: vec!["clean".to_string()],
-            clean: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Counted { files, units } => {
-                format!("Cleaned {} lines in {} file(s)", units, files)
+
+    Ok(match step {
+        "emojis" => {
+            let cfg = preset.emojis.clone().unwrap_or_default();
+            Box::new(EmojiTransformer::new(cfg.to_options(dry_run)))
+        }
+        "clean" => {
+            let cfg = preset.clean.clone().unwrap_or_default();
+            Box::new(WhitespaceCleaner::new(cfg.to_options(dry_run)))
+        }
+        "convert" => {
+            let cfg = preset
+                .convert
+                .clone()
+                .ok_or_else(|| missing("from_format and to_format"))?;
+            Box::new(cfg.to_converter(dry_run)?)
+        }
+        "endings" => {
+            let cfg = preset.endings.clone().unwrap_or_default();
+            Box::new(EndingsNormalizer::new(cfg.to_options(dry_run)?))
+        }
+        "indent" => {
+            let cfg = preset.indent.clone().unwrap_or_default();
+            Box::new(IndentNormalizer::new(cfg.to_options(dry_run)?))
+        }
+        "replace" => {
+            let cfg = preset.replace.clone().ok_or_else(|| missing("patterns"))?;
+            Box::new(reformat_core::ContentReplacer::new(
+                cfg.to_options(dry_run)?,
+            )?)
+        }
+        "header" => {
+            let cfg = preset.header.clone().ok_or_else(|| missing("text"))?;
+            Box::new(HeaderManager::new(cfg.to_options(dry_run)?)?)
+        }
+        "editorconfig" => {
+            let cfg: EditorConfigConfig = preset.editorconfig.clone().unwrap_or_default();
+            let indent = cfg.indent.unwrap_or(false);
+            Box::new(StyleStep::new(
+                move |path: &Path| editorconfig::style_of(path, indent),
+                cfg.recursive.unwrap_or(true),
+            ))
+        }
+        _ => unreachable!("step validation should have caught this"),
+    })
+}
+
+/// Writes data (content, a diff, completions) to stdout.
+///
+/// Errors are returned rather than panicking as `print!` does, so a closed
+/// pipe can end the run quietly.
+fn write_stdout(bytes: &[u8]) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(bytes)?;
+    stdout.flush()
+}
+
+/// Prints a unified diff of one file's change to stdout.
+///
+/// Carriage returns are shown as `\r`, so a line-ending change is visible.
+fn print_diff(path: &Path, before: &[u8], after: &[u8]) -> io::Result<()> {
+    let before = String::from_utf8_lossy(before).replace('\r', "\\r");
+    let after = String::from_utf8_lossy(after).replace('\r', "\\r");
+    let name = path.display().to_string();
+    let diff = similar::TextDiff::from_lines(before.as_str(), after.as_str());
+    let text = diff
+        .unified_diff()
+        .header(&format!("a/{}", name), &format!("b/{}", name))
+        .to_string();
+    write_stdout(text.as_bytes())
+}
+
+/// Runs every step of `preset` over the invocation's paths.
+///
+/// Consecutive content steps share one pass: each file is read once, every
+/// step is applied in order, and the file is written once. Rename and group
+/// run on their own, since they change paths.
+#[time("debug")]
+fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Execution> {
+    reformat_core::config::validate_steps(label, &preset.steps)?;
+    for path in inv.paths {
+        if std::fs::symlink_metadata(path).is_err() {
+            anyhow::bail!("path '{}' does not exist", path.display());
+        }
+    }
+    if inv.flags.writes()
+        && preset
+            .steps
+            .iter()
+            .any(|step| NEEDS_CLEAN_TREE.contains(&step.as_str()))
+    {
+        dirty::ensure_clean(label, inv.paths, inv.allow_dirty)?;
+    }
+
+    let mut preset = preset.clone();
+    if !inv.select.include.is_empty() {
+        widen_extensions_for_include(&mut preset);
+    }
+    let selection = inv.select.selection();
+    let dry_run = !inv.flags.writes();
+    let mut exec = Execution {
+        outcomes: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    let steps = &preset.steps;
+    let mut i = 0;
+    while i < steps.len() {
+        let step = steps[i].as_str();
+        debug!("Executing step [{}/{}]: {}", i + 1, steps.len(), step);
+
+        if step == "rename" {
+            let cfg = preset.rename.clone().unwrap_or_default();
+            let options = cfg.to_options(dry_run)?;
+            let extensions = cfg.file_extensions.clone().unwrap_or_default();
+            let files = select::discover(
+                inv.paths,
+                &selection,
+                options.recursive,
+                options.include_symlinks,
+            )?
+            .into_iter()
+            .filter(|f| reformat_core::step::matches_extension(&f.target.path, &extensions))
+            .map(|f| (f.target.path, f.is_symlink))
+            .collect();
+            let stats = FileRenamer::new(options).rename_paths(files);
+            exec.outcomes
+                .push((step.to_string(), StepOutcome::Renamed(stats)));
+            i += 1;
+            continue;
+        }
+
+        if step == "group" {
+            let [path] = inv.paths else {
+                anyhow::bail!(
+                    "{}: the group step takes exactly one directory, got {} paths",
+                    label,
+                    inv.paths.len()
+                );
+            };
+            let cfg = preset.group.clone().unwrap_or_default();
+            let result = FileGrouper::new(cfg.to_options(dry_run)?).process_with_changes(path)?;
+            if !dry_run && !result.changes.is_empty() {
+                let changes_path = resolve_record_path(None, "changes.json")?;
+                result.changes.write_to_file(&changes_path)?;
+                info!("Changes recorded to: {}", changes_path.display());
             }
-            _ => unreachable!(),
-        },
-        "No files needed cleaning",
-    )
+            exec.outcomes
+                .push((step.to_string(), StepOutcome::Grouped(result.stats)));
+            i += 1;
+            continue;
+        }
+
+        let end = (i..steps.len())
+            .find(|&j| !is_content_step(&steps[j]))
+            .unwrap_or(steps.len());
+        let names = &steps[i..end];
+
+        let built = names
+            .iter()
+            .map(|name| build_content_step(&preset, name, dry_run, label))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let refs: Vec<&dyn ContentStep> = built.iter().map(|b| b.as_ref()).collect();
+
+        let recursive = names.iter().any(|name| step_recursive(&preset, name));
+        let files = select::discover(inv.paths, &selection, recursive, false)?
+            .into_iter()
+            .map(|f| f.target);
+
+        let show_diff = inv.flags.diff;
+        let mut diff_error = None;
+        let report =
+            reformat_core::step::run_content_steps(&refs, files, dry_run, &mut |file, a, b| {
+                if show_diff && diff_error.is_none() {
+                    diff_error = print_diff(&file.path, a, b).err();
+                }
+            });
+        if let Some(e) = diff_error {
+            return Err(e.into());
+        }
+
+        for totals in report.steps {
+            exec.outcomes.push((
+                totals.name.to_string(),
+                StepOutcome::Counted {
+                    files: totals.files,
+                    units: totals.units,
+                },
+            ));
+        }
+        exec.errors.extend(report.errors);
+        i = end;
+    }
+
+    Ok(exec)
+}
+
+/// Converts an execution into the process outcome: an error if any file
+/// failed, otherwise whether `--check` found changes.
+fn finish(exec: &Execution, flags: &RunFlags) -> anyhow::Result<bool> {
+    if !exec.errors.is_empty() {
+        anyhow::bail!("{} file(s) could not be processed", exec.errors.len());
+    }
+    let changed = exec.outcomes.iter().any(|(_, o)| o.files() > 0);
+    if flags.check && changed {
+        info!("Check failed: some files would change.");
+    }
+    Ok(flags.check && changed)
+}
+
+/// Runs a single step as a standalone subcommand, presenting the result the
+/// way that command always has.
+fn run_single_step(
+    step: &str,
+    preset: Preset,
+    common: &Common,
+    allow_dirty: bool,
+    summary: impl Fn(&StepOutcome) -> String,
+    empty: &str,
+) -> anyhow::Result<bool> {
+    let inv = Invocation {
+        paths: &common.paths,
+        flags: &common.run,
+        select: &common.select,
+        allow_dirty,
+    };
+    if let Some(name) = &common.run.stdin_filename {
+        return run_stdin(step, &preset, name, &inv);
+    }
+    let exec = execute(step, &preset, &inv)?;
+    let (_, outcome) = &exec.outcomes[0];
+
+    if let StepOutcome::Renamed(ref stats) = outcome {
+        if stats.skipped > 0 {
+            warn!("Skipped {} file(s):", stats.skipped);
+            for message in &stats.errors {
+                warn!("  {}", message);
+            }
+        }
+    }
+
+    if outcome.files() > 0 {
+        info!("{}{}", common.run.prefix(), summary(outcome));
+    } else {
+        info!("{}", empty);
+    }
+    finish(&exec, &common.run)
+}
+
+/// The counts of a content step's outcome.
+fn counted(outcome: &StepOutcome) -> (usize, usize) {
+    match outcome {
+        StepOutcome::Counted { files, units } => (*files, *units),
+        _ => unreachable!("content steps are counted"),
+    }
+}
+
+fn preset_of(step: &str) -> Preset {
+    Preset {
+        steps: vec![step.to_string()],
+        ..Default::default()
+    }
+}
+
+/// Runs a pipeline (a preset or a job) and reports each step.
+fn run_pipeline(name: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<bool> {
+    if let Some(stdin_name) = &inv.flags.stdin_filename {
+        return run_stdin(name, preset, stdin_name, inv);
+    }
+    debug!(
+        "Running '{}' with {} step(s) on {} path(s)",
+        name,
+        preset.steps.len(),
+        inv.paths.len()
+    );
+    let exec = execute(name, preset, inv)?;
+    let flags = inv.flags;
+    let prefix = flags.prefix();
+
+    for (step, outcome) in &exec.outcomes {
+        match outcome {
+            StepOutcome::Renamed(stats) => {
+                if stats.renamed > 0 {
+                    info!("{}  rename: {} file(s) renamed", prefix, stats.renamed);
+                } else {
+                    info!("  rename: no files needed renaming");
+                }
+                if stats.skipped > 0 {
+                    warn!("  rename: skipped {} file(s)", stats.skipped);
+                    for message in &stats.errors {
+                        warn!("    {}", message);
+                    }
+                }
+            }
+            StepOutcome::Grouped(stats) => {
+                if stats.files_moved > 0 {
+                    info!(
+                        "{}  group: {} dir(s) created, {} file(s) moved",
+                        prefix, stats.dirs_created, stats.files_moved
+                    );
+                } else {
+                    info!("  group: no files needed grouping");
+                }
+            }
+            StepOutcome::Counted { files, units } => {
+                if *files > 0 {
+                    info!(
+                        "{}  {}: {} file(s), {} change(s)",
+                        prefix, step, files, units
+                    );
+                } else {
+                    info!("  {}: nothing to do", step);
+                }
+            }
+        }
+    }
+
+    info!("Pipeline '{}' complete.", name);
+    finish(&exec, flags)
 }
 
 #[time("debug")]
-fn run_emojis(
-    path: PathBuf,
-    recursive: bool,
-    dry_run: bool,
-    extensions: Option<Vec<String>>,
-    replace_task: bool,
-    remove_other: bool,
-) -> anyhow::Result<()> {
-    let cfg = EmojiConfig {
-        replace_task_emojis: Some(replace_task),
-        remove_other_emojis: Some(remove_other),
-        file_extensions: extensions,
-        recursive: Some(recursive),
-    };
-    run_single_step(
-        "emojis",
-        reformat_core::Preset {
-            steps: vec!["emojis".to_string()],
-            emojis: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Counted { files, units } => format!(
-                "Transformed emojis in {} file(s) ({} changes)",
-                files, units
-            ),
-            _ => unreachable!(),
-        },
-        "No files contained emojis to transform",
-    )
+fn run_preset(name: &str, config_file: Option<&Path>, inv: &Invocation) -> anyhow::Result<bool> {
+    let (_, config) = load_presets(config_file, inv.paths)?;
+    let preset = config::get_preset(&config, name)?;
+    run_pipeline(name, preset, inv)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Finds and loads the preset config, or explains where it looked.
+fn load_presets(
+    config_file: Option<&Path>,
+    paths: &[PathBuf],
+) -> anyhow::Result<(PathBuf, reformat_core::ReformatConfig)> {
+    config::find_config(config_file, paths)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "reformat.json not found in the current directory, the target paths, \
+             or their parents. Pass --config to name one."
+        )
+    })
+}
+
+fn run_list_presets(config_file: Option<&Path>) -> anyhow::Result<bool> {
+    let (path, config) = load_presets(config_file, &[])?;
+    let mut names: Vec<&String> = config.keys().collect();
+    names.sort();
+    let mut text = format!("{}:\n", path.display());
+    for name in names {
+        text.push_str(&format!("  {}: {}\n", name, config[name].steps.join(", ")));
+    }
+    write_stdout(text.as_bytes())?;
+    Ok(false)
+}
+
 #[time("debug")]
-fn run_rename(
-    path: PathBuf,
-    recursive: bool,
-    dry_run: bool,
-    include_symlinks: bool,
-    to_lowercase: bool,
-    to_uppercase: bool,
-    to_capitalize: bool,
-    underscored: bool,
-    hyphenated: bool,
-    add_prefix: Option<String>,
-    rm_prefix: Option<String>,
-    add_suffix: Option<String>,
-    rm_suffix: Option<String>,
-    replace_prefix: Option<Vec<String>>,
-    replace_suffix: Option<Vec<String>>,
-    timestamp_long: bool,
-    timestamp_short: bool,
-) -> anyhow::Result<()> {
-    let case_transform = if to_lowercase {
-        Some("lowercase")
-    } else if to_uppercase {
-        Some("uppercase")
-    } else if to_capitalize {
-        Some("capitalize")
+fn run_job(job_source: &str, inv: &Invocation) -> anyhow::Result<bool> {
+    let content = if job_source == "-" {
+        if inv.flags.stdin_filename.is_some() {
+            anyhow::bail!("--job - and --stdin-filename both read stdin; put the job in a file");
+        }
+        debug!("Reading job from stdin");
+        let mut buf = String::new();
+        io::Read::read_to_string(&mut io::stdin(), &mut buf)?;
+        buf
     } else {
-        None
-    };
-    let space_replace = if underscored {
-        Some("underscore")
-    } else if hyphenated {
-        Some("hyphen")
-    } else {
-        None
-    };
-    let timestamp = if timestamp_long {
-        Some("long")
-    } else if timestamp_short {
-        Some("short")
-    } else {
-        None
+        debug!("Reading job from file: {}", job_source);
+        std::fs::read_to_string(job_source)
+            .map_err(|e| anyhow::anyhow!("failed to read job file '{}': {}", job_source, e))?
     };
 
-    let cfg = RenameConfig {
-        case_transform: case_transform.map(String::from),
-        space_replace: space_replace.map(String::from),
-        recursive: Some(recursive),
-        include_symlinks: Some(include_symlinks),
-        add_prefix,
-        remove_prefix: rm_prefix,
-        add_suffix,
-        remove_suffix: rm_suffix,
-        replace_prefix,
-        replace_suffix,
-        timestamp: timestamp.map(String::from),
+    let preset: Preset = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse job: {}", e))?;
+
+    let label = if job_source == "-" {
+        "stdin"
+    } else {
+        job_source
     };
-    run_single_step(
-        "rename",
-        reformat_core::Preset {
-            steps: vec!["rename".to_string()],
-            rename: Some(cfg),
+    run_pipeline(label, &preset, inv)
+}
+
+/// The default command: replace task emojis and strip trailing whitespace.
+#[time("debug")]
+fn run_default(recursive: bool, inv: &Invocation) -> anyhow::Result<bool> {
+    let preset = Preset {
+        steps: vec!["emojis".to_string(), "clean".to_string()],
+        emojis: Some(EmojiConfig {
+            recursive: Some(recursive),
             ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Renamed(s) => format!("Renamed {} file(s)", s.renamed),
-            _ => unreachable!(),
-        },
-        "No files needed renaming",
-    )
+        }),
+        clean: Some(CleanConfig {
+            recursive: Some(recursive),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    if let Some(name) = &inv.flags.stdin_filename {
+        return run_stdin("default", &preset, name, inv);
+    }
+    let flags = inv.flags;
+    let exec = execute("default", &preset, inv)?;
+    let (emoji_files, emoji_changes) = counted(&exec.outcomes[0].1);
+    let (clean_files, clean_lines) = counted(&exec.outcomes[1].1);
+
+    if emoji_files > 0 || clean_files > 0 {
+        info!("{}Processed files:", flags.prefix());
+        if emoji_files > 0 {
+            info!(
+                "  - Emoji transformations: {} file(s) ({} changes)",
+                emoji_files, emoji_changes
+            );
+        }
+        if clean_files > 0 {
+            info!(
+                "  - Whitespace cleaned: {} file(s) ({} lines)",
+                clean_files, clean_lines
+            );
+        }
+    } else {
+        info!("No files needed processing");
+    }
+    finish(&exec, flags)
 }
 
 /// Resolves where a JSON record should be written, warning before replacing
@@ -840,6 +1314,27 @@ fn prompt_scan_dirs(default_dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Logs what applying a fix record did.
+fn report_applied(result: &reformat_core::ApplyResult) {
+    info!(
+        "\nFixed {} reference(s) in {} file(s).",
+        result.references_fixed, result.files_modified
+    );
+
+    if result.references_skipped > 0 {
+        info!(
+            "Skipped {} reference(s): the recorded text no longer \
+             matches the file. The fixes may already have been \
+             applied, or the file changed since the scan.",
+            result.references_skipped
+        );
+    }
+
+    for err in &result.errors {
+        log::error!("  - {}", err);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[time("debug")]
 fn run_group(
@@ -856,18 +1351,13 @@ fn run_group(
     verbose_scan: bool,
     changes_file: Option<PathBuf>,
     fixes_file: Option<PathBuf>,
-) -> anyhow::Result<()> {
+    allow_dirty: bool,
+) -> anyhow::Result<bool> {
     debug!("Grouping files by prefix in: {}", path.display());
     debug!(
         "Recursive: {}, Dry run: {}, Separator: '{}', Min count: {}",
         recursive, dry_run, separator, min_count
     );
-    if from_suffix {
-        debug!("From suffix: enabled (splitting at last separator)");
-    }
-    if strip_prefix || from_suffix {
-        debug!("Strip prefix: enabled");
-    }
 
     let cfg = GroupConfig {
         separator: Some(separator.to_string()),
@@ -880,15 +1370,24 @@ fn run_group(
     let grouper = FileGrouper::new(cfg.to_options(dry_run)?);
 
     if preview {
-        let groups = grouper.preview(&path)?;
+        if !path.is_dir() {
+            anyhow::bail!("Path is not a directory: {}", path.display());
+        }
+        let mut dirs = vec![path.clone()];
+        if recursive {
+            dirs.extend(reformat_core::walk::walk_dirs(&path, true));
+        }
 
-        if groups.is_empty() {
-            info!(
-                "No file groups found matching criteria (min_count: {})",
-                min_count
-            );
-        } else {
-            info!("Found {} potential group(s):", groups.len());
+        let mut total = 0;
+        for dir in &dirs {
+            let groups = grouper.preview(dir)?;
+            if groups.is_empty() {
+                continue;
+            }
+            total += groups.len();
+            if recursive {
+                info!("\n{}:", dir.display());
+            }
             for (prefix, files) in &groups {
                 info!("\n  {} ({} files):", prefix, files.len());
                 for file in files {
@@ -896,854 +1395,721 @@ fn run_group(
                 }
             }
         }
-        return Ok(());
+
+        if total == 0 {
+            info!(
+                "No file groups found matching criteria (min_count: {})",
+                min_count
+            );
+        } else {
+            info!("\nFound {} potential group(s).", total);
+        }
+        return Ok(false);
+    }
+    if !dry_run {
+        let mut touched = vec![path.clone()];
+        touched.extend(scope.clone());
+        dirty::ensure_clean("group", &touched, allow_dirty)?;
     }
     let result = grouper.process_with_changes(&path)?;
 
     let stats = &result.stats;
 
-    if stats.files_moved > 0 {
-        let prefix_str = if dry_run { "[DRY-RUN] " } else { "" };
-        debug!(
-            "{}Grouping complete: {} directories created, {} files moved",
-            prefix_str, stats.dirs_created, stats.files_moved
-        );
-        info!("{}Grouping complete:", prefix_str);
-        if stats.dirs_created > 0 {
-            info!("  - Directories created: {}", stats.dirs_created);
-        }
-        info!("  - Files moved: {}", stats.files_moved);
-        if stats.files_renamed > 0 {
-            info!(
-                "  - Files renamed (prefix stripped): {}",
-                stats.files_renamed
-            );
-        }
-
-        // A dry run must not leave anything behind. Writing the record
-        // anyway was worse than untidy: it described moves that had not
-        // happened, and feeding it to the reference fixer would rewrite
-        // references to files still sitting where they were.
-        if dry_run {
-            info!("[DRY-RUN] No changes file written.");
-        } else if !result.changes.is_empty() {
-            let changes_path = resolve_record_path(changes_file, "changes.json")?;
-            result.changes.write_to_file(&changes_path)?;
-            info!("\nChanges recorded to: {}", changes_path.display());
-
-            // Interactive workflow for reference scanning
-            if !dry_run && !no_interactive {
-                info!("");
-                if prompt_yes_no("Would you like to scan for broken references?") {
-                    let dirs_to_scan = if let Some(dir) = scope {
-                        vec![dir]
-                    } else {
-                        prompt_scan_dirs(&path)
-                    };
-
-                    // Check for scope/target overlap and warn
-                    for scan_dir in &dirs_to_scan {
-                        if let Some(warning) = check_scope_overlap(scan_dir, &path) {
-                            warn!("\n{}\n", warning);
-                        }
-                    }
-
-                    // Scan for broken references
-                    let scan_options = ScanOptions {
-                        verbose: verbose_scan,
-                        ..Default::default()
-                    };
-
-                    debug!("Scanning for broken references...");
-                    let scanner =
-                        ReferenceScanner::from_change_record(&result.changes, scan_options)?;
-                    let fix_record = scanner.scan(&dirs_to_scan)?;
-
-                    if fix_record.is_empty() {
-                        info!("No broken references found.");
-                    } else {
-                        // Write fixes.json
-                        let fixes_path = resolve_record_path(fixes_file.clone(), "fixes.json")?;
-                        fix_record.write_to_file(&fixes_path)?;
-                        info!("\nFound {} broken reference(s).", fix_record.len());
-                        info!("Proposed fixes written to: {}", fixes_path.display());
-
-                        // Show summary of fixes
-                        info!("\nProposed fixes:");
-                        for fix in fix_record.fixes.iter().take(10) {
-                            info!(
-                                "  {}:{}: '{}' -> '{}'",
-                                fix.file, fix.line, fix.old_reference, fix.new_reference
-                            );
-                        }
-                        if fix_record.len() > 10 {
-                            info!("  ... and {} more (see fixes.json)", fix_record.len() - 10);
-                        }
-
-                        info!("");
-                        if prompt_yes_no("Review fixes.json and apply changes?") {
-                            let apply_result = ReferenceFixer::apply_fixes(&fix_record)?;
-
-                            info!(
-                                "\nFixed {} reference(s) in {} file(s).",
-                                apply_result.references_fixed, apply_result.files_modified
-                            );
-
-                            if apply_result.references_skipped > 0 {
-                                info!(
-                                    "Skipped {} reference(s): the recorded text no longer \
-                                     matches the file. The fixes may already have been \
-                                     applied, or the file changed since the scan.",
-                                    apply_result.references_skipped
-                                );
-                            }
-
-                            if !apply_result.errors.is_empty() {
-                                info!("\nErrors encountered:");
-                                for err in &apply_result.errors {
-                                    info!("  - {}", err);
-                                }
-                            }
-                        } else {
-                            info!("Fixes not applied. You can review fixes.json and apply them later.");
-                        }
-                    }
-                }
-            } else if !dry_run && scope.is_some() {
-                // Non-interactive mode with --scope specified
-                let dirs_to_scan = vec![scope.unwrap()];
-
-                // Check for scope/target overlap and warn
-                for scan_dir in &dirs_to_scan {
-                    if let Some(warning) = check_scope_overlap(scan_dir, &path) {
-                        warn!("\n{}\n", warning);
-                    }
-                }
-
-                let scan_options = ScanOptions {
-                    verbose: verbose_scan,
-                    ..Default::default()
-                };
-
-                debug!("Scanning for broken references...");
-                let scanner = ReferenceScanner::from_change_record(&result.changes, scan_options)?;
-                let fix_record = scanner.scan(&dirs_to_scan)?;
-
-                if fix_record.is_empty() {
-                    info!("\nNo broken references found.");
-                } else {
-                    let fixes_path = resolve_record_path(fixes_file, "fixes.json")?;
-                    fix_record.write_to_file(&fixes_path)?;
-                    info!("\nFound {} broken reference(s).", fix_record.len());
-                    info!("Proposed fixes written to: {}", fixes_path.display());
-                }
-            }
-        }
-    } else {
+    if stats.files_moved == 0 {
         info!("No files needed grouping");
+        return Ok(false);
     }
 
-    Ok(())
-}
-
-#[time("debug")]
-fn run_endings(
-    path: PathBuf,
-    style: &str,
-    recursive: bool,
-    dry_run: bool,
-    extensions: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let cfg = EndingsConfig {
-        style: Some(style.to_string()),
-        file_extensions: extensions,
-        recursive: Some(recursive),
-    };
-    run_single_step(
-        "endings",
-        reformat_core::Preset {
-            steps: vec!["endings".to_string()],
-            endings: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Counted { files, units } => {
-                format!("Normalized {} ending(s) in {} file(s)", units, files)
-            }
-            _ => unreachable!(),
-        },
-        "No files needed line ending normalization",
-    )
-}
-
-#[time("debug")]
-fn run_indent(
-    path: PathBuf,
-    style: &str,
-    width: usize,
-    recursive: bool,
-    dry_run: bool,
-    extensions: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let cfg = IndentConfig {
-        style: Some(style.to_string()),
-        width: Some(width),
-        file_extensions: extensions,
-        recursive: Some(recursive),
-    };
-    run_single_step(
-        "indent",
-        reformat_core::Preset {
-            steps: vec!["indent".to_string()],
-            indent: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Counted { files, units } => {
-                format!("Normalized {} line(s) in {} file(s)", units, files)
-            }
-            _ => unreachable!(),
-        },
-        "No files needed indentation normalization",
-    )
-}
-
-#[time("debug")]
-fn run_replace(
-    path: PathBuf,
-    find: &str,
-    replace_with: &str,
-    recursive: bool,
-    dry_run: bool,
-    extensions: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let cfg = ReplaceConfig {
-        patterns: Some(vec![ReplacePatternEntry {
-            find: find.to_string(),
-            replace: replace_with.to_string(),
-        }]),
-        file_extensions: extensions,
-        recursive: Some(recursive),
-    };
-    run_single_step(
-        "replace",
-        reformat_core::Preset {
-            steps: vec!["replace".to_string()],
-            replace: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Counted { files, units } => {
-                format!("Made {} replacement(s) in {} file(s)", units, files)
-            }
-            _ => unreachable!(),
-        },
-        "No files matched the pattern",
-    )
-}
-
-#[time("debug")]
-fn run_header(
-    path: PathBuf,
-    text: &str,
-    update_year: bool,
-    recursive: bool,
-    dry_run: bool,
-    extensions: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let cfg = HeaderConfig {
-        // Allow \n in the argument to stand for a real newline.
-        text: Some(text.replace("\\n", "\n")),
-        update_year: Some(update_year),
-        file_extensions: extensions,
-        recursive: Some(recursive),
-    };
-    run_single_step(
-        "header",
-        reformat_core::Preset {
-            steps: vec!["header".to_string()],
-            header: Some(cfg),
-            ..Default::default()
-        },
-        &path,
-        dry_run,
-        |o| match o {
-            StepOutcome::Counted { files, .. } => {
-                format!("Updated headers in {} file(s)", files)
-            }
-            _ => unreachable!(),
-        },
-        "All files already have correct headers",
-    )
-}
-
-/// What a step did. Steps compute; callers present.
-///
-/// Option assembly is shared -- that was the real duplication -- but a
-/// standalone subcommand and a pipeline step word their summaries
-/// differently, so formatting stays with the caller.
-enum StepOutcome {
-    /// Files touched, plus a step-specific unit count (lines, changes,
-    /// replacements, endings).
-    Counted {
-        files: usize,
-        units: usize,
-    },
-    Renamed(reformat_core::RenameStats),
-    Grouped(reformat_core::GroupStats),
-    Converted,
-}
-
-impl StepOutcome {
-    fn files(&self) -> usize {
-        match self {
-            StepOutcome::Counted { files, .. } => *files,
-            StepOutcome::Renamed(s) => s.renamed,
-            StepOutcome::Grouped(s) => s.files_moved,
-            StepOutcome::Converted => 0,
-        }
+    let prefix_str = if dry_run { "[DRY-RUN] " } else { "" };
+    info!("{}Grouping complete:", prefix_str);
+    if stats.dirs_created > 0 {
+        info!("  - Directories created: {}", stats.dirs_created);
     }
-}
-
-/// Runs one pipeline step and reports what it did.
-///
-/// Both the subcommands and the preset/job runner funnel through here: each
-/// builds the step's `*Config` and calls this. Previously the two paths
-/// assembled options separately and had drifted -- the preset `convert` step
-/// hardcoded `None` for the strip/replace affix settings, so half of
-/// `ConvertConfig` was unreachable from a preset.
-fn run_step(
-    step: &str,
-    preset: &reformat_core::Preset,
-    path: &Path,
-    dry_run: bool,
-    label: &str,
-) -> anyhow::Result<StepOutcome> {
-    if !path.exists() {
-        anyhow::bail!("path '{}' does not exist", path.display());
+    info!("  - Files moved: {}", stats.files_moved);
+    if stats.files_renamed > 0 {
+        info!(
+            "  - Files renamed (prefix stripped): {}",
+            stats.files_renamed
+        );
     }
 
-    let missing = |what: &str| {
-        anyhow::anyhow!(
-            "{}: '{}' step requires a [{}] config with {}",
-            label,
-            step,
-            step,
-            what
-        )
-    };
-
-    let outcome = match step {
-        "rename" => {
-            let cfg = preset.rename.clone().unwrap_or_default();
-            StepOutcome::Renamed(
-                FileRenamer::new(cfg.to_options(dry_run)?).process_with_stats(path)?,
-            )
-        }
-
-        "emojis" => {
-            let cfg = preset.emojis.clone().unwrap_or_default();
-            let (files, units) = EmojiTransformer::new(cfg.to_options(dry_run)).process(path)?;
-            StepOutcome::Counted { files, units }
-        }
-
-        "clean" => {
-            let cfg = preset.clean.clone().unwrap_or_default();
-            let (files, units) = WhitespaceCleaner::new(cfg.to_options(dry_run)).process(path)?;
-            StepOutcome::Counted { files, units }
-        }
-
-        "convert" => {
-            let cfg = preset
-                .convert
-                .clone()
-                .ok_or_else(|| missing("from_format and to_format"))?;
-            cfg.to_converter(dry_run)?.process_directory(path)?;
-            StepOutcome::Converted
-        }
-
-        "group" => {
-            let cfg = preset.group.clone().unwrap_or_default();
-            StepOutcome::Grouped(
-                FileGrouper::new(cfg.to_options(dry_run)?)
-                    .process_with_changes(path)?
-                    .stats,
-            )
-        }
-
-        "endings" => {
-            let cfg = preset.endings.clone().unwrap_or_default();
-            let (files, units) = EndingsNormalizer::new(cfg.to_options(dry_run)?).process(path)?;
-            StepOutcome::Counted { files, units }
-        }
-
-        "indent" => {
-            let cfg = preset.indent.clone().unwrap_or_default();
-            let (files, units) = IndentNormalizer::new(cfg.to_options(dry_run)?).process(path)?;
-            StepOutcome::Counted { files, units }
-        }
-
-        "replace" => {
-            let cfg = preset.replace.clone().ok_or_else(|| missing("patterns"))?;
-            let (files, units) = ContentReplacer::new(cfg.to_options(dry_run)?)?.process(path)?;
-            StepOutcome::Counted { files, units }
-        }
-
-        "header" => {
-            let cfg = preset.header.clone().ok_or_else(|| missing("text"))?;
-            let (files, units) = HeaderManager::new(cfg.to_options(dry_run)?)?.process(path)?;
-            StepOutcome::Counted { files, units }
-        }
-
-        _ => unreachable!("step validation should have caught this"),
-    };
-
-    Ok(outcome)
-}
-
-/// Wraps a single step as a standalone subcommand, presenting the result the
-/// way that command always has.
-fn run_single_step(
-    step: &str,
-    preset: reformat_core::Preset,
-    path: &Path,
-    dry_run: bool,
-    summary: impl Fn(&StepOutcome) -> String,
-    empty: &str,
-) -> anyhow::Result<()> {
-    let outcome = run_step(step, &preset, path, dry_run, step)?;
-    let prefix = if dry_run { "[DRY-RUN] " } else { "" };
-
-    if let StepOutcome::Renamed(ref stats) = outcome {
-        if stats.skipped > 0 {
-            warn!("Skipped {} file(s):", stats.skipped);
-            for message in &stats.errors {
-                warn!("  {}", message);
-            }
-        }
+    // A dry run must not leave anything behind: a record of moves that did
+    // not happen would mislead the reference fixer.
+    if dry_run {
+        info!("[DRY-RUN] No changes file written.");
+        return Ok(false);
+    }
+    if result.changes.is_empty() {
+        return Ok(false);
     }
 
-    if outcome.files() > 0 || matches!(outcome, StepOutcome::Converted) {
-        info!("{}{}", prefix, summary(&outcome));
+    let changes_path = resolve_record_path(changes_file, "changes.json")?;
+    result.changes.write_to_file(&changes_path)?;
+    info!("\nChanges recorded to: {}", changes_path.display());
+
+    let dirs_to_scan = if !no_interactive {
+        info!("");
+        if !prompt_yes_no("Would you like to scan for broken references?") {
+            return Ok(false);
+        }
+        match scope {
+            Some(dir) => vec![dir],
+            None => prompt_scan_dirs(&path),
+        }
+    } else if let Some(dir) = scope {
+        vec![dir]
     } else {
-        info!("{}", empty);
+        return Ok(false);
+    };
+
+    for scan_dir in &dirs_to_scan {
+        if let Some(warning) = check_scope_overlap(scan_dir, &path) {
+            warn!("\n{}\n", warning);
+        }
     }
-    Ok(())
+
+    let scan_options = ScanOptions {
+        verbose: verbose_scan,
+        ..Default::default()
+    };
+    debug!("Scanning for broken references...");
+    let scanner = ReferenceScanner::from_change_record(&result.changes, scan_options)?;
+    let fix_record = scanner.scan(&dirs_to_scan)?;
+
+    if fix_record.is_empty() {
+        info!("\nNo broken references found.");
+        return Ok(false);
+    }
+
+    let fixes_path = resolve_record_path(fixes_file, "fixes.json")?;
+    fix_record.write_to_file(&fixes_path)?;
+    info!("\nFound {} broken reference(s).", fix_record.len());
+    info!("Proposed fixes written to: {}", fixes_path.display());
+
+    if no_interactive {
+        info!(
+            "Review it, then apply with: reformat apply_fixes {}",
+            fixes_path.display()
+        );
+        return Ok(false);
+    }
+
+    info!("\nProposed fixes:");
+    for fix in fix_record.fixes.iter().take(10) {
+        info!(
+            "  {}:{}: '{}' -> '{}'",
+            fix.file, fix.line, fix.old_reference, fix.new_reference
+        );
+    }
+    if fix_record.len() > 10 {
+        info!("  ... and {} more (see fixes.json)", fix_record.len() - 10);
+    }
+
+    info!("");
+    if prompt_yes_no("Review fixes.json and apply changes?") {
+        // The scan directories were chosen at the prompt, after the guard
+        // above ran. Check the files the fixes edit, except those the
+        // grouping itself just moved.
+        let moved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let mut to_edit: Vec<PathBuf> = fix_record
+            .fixes
+            .iter()
+            .map(|fix| PathBuf::from(&fix.file))
+            .filter(|file| {
+                !file
+                    .canonicalize()
+                    .is_ok_and(|real| real.starts_with(&moved))
+            })
+            .collect();
+        to_edit.sort();
+        to_edit.dedup();
+        dirty::ensure_clean("group", &to_edit, allow_dirty).map_err(|e| {
+            anyhow::anyhow!(
+                "{}\nThe grouping is done; apply the fixes later with: reformat apply_fixes {}",
+                e,
+                fixes_path.display()
+            )
+        })?;
+
+        let apply_result = ReferenceFixer::apply_fixes(&fix_record)?;
+        report_applied(&apply_result);
+        if !apply_result.errors.is_empty() {
+            anyhow::bail!("{} file(s) could not be fixed", apply_result.errors.len());
+        }
+    } else {
+        info!(
+            "Fixes not applied. Review them, then run: reformat apply_fixes {}",
+            fixes_path.display()
+        );
+    }
+
+    Ok(false)
 }
 
-/// Core pipeline execution engine. Both presets and jobs use this.
-fn run_pipeline(
-    name: &str,
-    preset: &reformat_core::Preset,
-    path: &Path,
-    dry_run: bool,
-) -> anyhow::Result<()> {
-    reformat_core::config::validate_steps(name, &preset.steps)?;
+#[time("debug")]
+fn run_apply_fixes(fixes_file: &Path, dry_run: bool) -> anyhow::Result<bool> {
+    let record = FixRecord::read_from_file(fixes_file)
+        .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", fixes_file.display(), e))?;
 
-    debug!(
-        "Running '{}' with {} step(s) on: {}",
-        name,
-        preset.steps.len(),
-        path.display()
-    );
+    if record.is_empty() {
+        info!("No fixes recorded in {}", fixes_file.display());
+        return Ok(false);
+    }
 
-    let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+    if dry_run {
+        for line in ReferenceFixer::dry_run(&record) {
+            info!("[DRY-RUN] {}", line);
+        }
+        info!("[DRY-RUN] {} fix(es) would be applied", record.len());
+        return Ok(false);
+    }
 
-    for (i, step) in preset.steps.iter().enumerate() {
-        debug!(
-            "Executing step [{}/{}]: {}",
-            i + 1,
-            preset.steps.len(),
+    let result = ReferenceFixer::apply_fixes(&record)?;
+    report_applied(&result);
+    if !result.errors.is_empty() {
+        anyhow::bail!("{} file(s) could not be fixed", result.errors.len());
+    }
+    Ok(false)
+}
+
+impl Commands {
+    /// The shared arguments of the commands that have them.
+    fn common(&self) -> Option<&Common> {
+        match self {
+            Commands::Convert { common, .. }
+            | Commands::Clean { common, .. }
+            | Commands::Emojis { common, .. }
+            | Commands::RenameFiles { common, .. }
+            | Commands::Endings { common, .. }
+            | Commands::Indent { common, .. }
+            | Commands::Replace { common, .. }
+            | Commands::Header { common, .. }
+            | Commands::Editorconfig { common, .. } => Some(common),
+            _ => None,
+        }
+    }
+}
+
+/// Applies the content steps of `preset` to stdin, as if it were the file
+/// `name`, and writes the result to stdout.
+///
+/// `--diff` prints a diff instead of the content. `--check` and `--dry-run`
+/// print nothing; `--check` still sets the exit status. Content that `name`
+/// does not select, or that no step accepts, is written back unchanged.
+fn run_stdin(label: &str, preset: &Preset, name: &Path, inv: &Invocation) -> anyhow::Result<bool> {
+    reformat_core::config::validate_steps(label, &preset.steps)?;
+    if let Some(step) = preset.steps.iter().find(|s| !is_content_step(s)) {
+        anyhow::bail!(
+            "{}: the {} step renames or moves files, so it cannot read stdin",
+            label,
             step
         );
-        let outcome = run_step(step, preset, path, dry_run, name)?;
-
-        match &outcome {
-            StepOutcome::Converted => info!("{}  {}: complete", prefix, step),
-            StepOutcome::Renamed(stats) => {
-                if stats.renamed > 0 {
-                    info!("{}  rename: {} file(s) renamed", prefix, stats.renamed);
-                } else {
-                    info!("  rename: no files needed renaming");
-                }
-                if stats.skipped > 0 {
-                    warn!("  rename: skipped {} file(s)", stats.skipped);
-                    for message in &stats.errors {
-                        warn!("    {}", message);
-                    }
-                }
-            }
-            StepOutcome::Grouped(stats) => {
-                if stats.files_moved > 0 {
-                    info!(
-                        "{}  group: {} dir(s) created, {} file(s) moved",
-                        prefix, stats.dirs_created, stats.files_moved
-                    );
-                } else {
-                    info!("  group: no files needed grouping");
-                }
-            }
-            StepOutcome::Counted { files, units } => {
-                if *files > 0 {
-                    info!(
-                        "{}  {}: {} file(s), {} change(s)",
-                        prefix, step, files, units
-                    );
-                } else {
-                    info!("  {}: nothing to do", step);
-                }
-            }
-        }
     }
 
-    info!("Pipeline '{}' complete.", name);
-    Ok(())
-}
+    let mut preset = preset.clone();
+    if !inv.select.include.is_empty() {
+        widen_extensions_for_include(&mut preset);
+    }
+    let dry_run = !inv.flags.writes();
+    let built = preset
+        .steps
+        .iter()
+        .map(|step| build_content_step(&preset, step, dry_run, label))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let refs: Vec<&dyn ContentStep> = built.iter().map(|b| b.as_ref()).collect();
 
-#[time("debug")]
-fn run_preset(name: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
-    let config = config::load_config()?
-        .ok_or_else(|| anyhow::anyhow!("reformat.json not found in current directory"))?;
-    let preset = config::get_preset(&config, name)?;
-    run_pipeline(name, preset, &path, dry_run)
-}
+    let mut input = Vec::new();
+    io::stdin().read_to_end(&mut input)?;
 
-#[time("debug")]
-fn run_job(job_source: &str, path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
-    let content = if job_source == "-" {
-        debug!("Reading job from stdin");
-        let mut buf = String::new();
-        io::Read::read_to_string(&mut io::stdin(), &mut buf)?;
-        buf
+    let output = if select::named_file_selected(name, &inv.select.selection())? {
+        reformat_core::apply_to_bytes(&refs, &FileTarget::file(name), &input, dry_run).0
     } else {
-        debug!("Reading job from file: {}", job_source);
-        std::fs::read_to_string(job_source)
-            .map_err(|e| anyhow::anyhow!("failed to read job file '{}': {}", job_source, e))?
+        input.clone()
+    };
+    let changed = output != input;
+
+    if inv.flags.diff {
+        if changed {
+            print_diff(name, &input, &output)?;
+        }
+    } else if !(inv.flags.check || inv.flags.dry_run) {
+        write_stdout(&output)?;
+    }
+    Ok(inv.flags.check && changed)
+}
+
+fn run(cli: Cli) -> anyhow::Result<bool> {
+    let Some(command) = cli.command else {
+        if cli.paths.is_empty() && cli.run.stdin_filename.is_none() {
+            anyhow::bail!("no command or path specified. Use --help for usage information.");
+        }
+        let inv = Invocation {
+            paths: &cli.paths,
+            flags: &cli.run,
+            select: &cli.select,
+            allow_dirty: cli.allow_dirty,
+        };
+        return if let Some(preset_name) = &cli.preset {
+            run_preset(preset_name, cli.config.as_deref(), &inv)
+        } else if let Some(job_source) = &cli.job {
+            run_job(job_source, &inv)
+        } else {
+            run_default(cli.recursive, &inv)
+        };
     };
 
-    let preset: reformat_core::Preset = serde_json::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("failed to parse job: {}", e))?;
-
-    let label = if job_source == "-" {
-        "stdin"
-    } else {
-        job_source
-    };
-    run_pipeline(label, &preset, &path, dry_run)
-}
-
-#[time("debug")]
-fn run_combined(path: PathBuf, recursive: bool, dry_run: bool) -> anyhow::Result<()> {
-    debug!("Running combined transformations on: {}", path.display());
-    debug!("Recursive: {}, Dry run: {}", recursive, dry_run);
-
-    if !path.exists() {
-        anyhow::bail!("path '{}' does not exist", path.display());
-    }
-
-    let options = CombinedOptions { recursive, dry_run };
-
-    let processor = CombinedProcessor::new(options);
-    let stats = processor.process(&path)?;
-
-    let prefix = if dry_run { "[DRY-RUN] " } else { "" };
-
-    // Print summary
-    if stats.files_renamed > 0
-        || stats.files_emoji_transformed > 0
-        || stats.files_whitespace_cleaned > 0
-    {
-        debug!(
-            "{}Combined processing complete: {} renamed, {} emoji-transformed ({} changes), {} whitespace-cleaned ({} lines)",
-            prefix, stats.files_renamed, stats.files_emoji_transformed, stats.emoji_changes,
-            stats.files_whitespace_cleaned, stats.whitespace_lines_cleaned
-        );
-        info!("{}Processed files:", prefix);
-        if stats.files_renamed > 0 {
-            info!("  - Renamed: {} file(s)", stats.files_renamed);
-        }
-        if stats.files_emoji_transformed > 0 {
-            info!(
-                "  - Emoji transformations: {} file(s) ({} changes)",
-                stats.files_emoji_transformed, stats.emoji_changes
-            );
-        }
-        if stats.files_whitespace_cleaned > 0 {
-            info!(
-                "  - Whitespace cleaned: {} file(s) ({} lines)",
-                stats.files_whitespace_cleaned, stats.whitespace_lines_cleaned
-            );
-        }
-    } else {
-        info!("No files needed processing");
-    }
-
-    Ok(())
-}
-
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
-    // Initialize logging
-    if let Err(e) = init_logging(cli.verbose, cli.quiet, cli.log_file.clone()) {
-        warn!("Warning: Failed to initialize logging: {}", e);
-    }
-
-    debug!("CLI arguments parsed successfully");
-
-    let result = match cli.command {
-        None => {
-            if let Some(preset_name) = cli.preset {
-                // Preset mode: run named preset from reformat.json
-                if let Some(path) = cli.path {
-                    debug!("Running preset '{}'", preset_name);
-                    run_preset(&preset_name, path, cli.dry_run)
-                } else {
-                    log::error!("No path specified. Usage: reformat -p <preset> <path>");
-                    std::process::exit(1);
-                }
-            } else if let Some(job_source) = cli.job {
-                // Job mode: run ad-hoc pipeline from file or stdin
-                if let Some(path) = cli.path {
-                    debug!("Running job from '{}'", job_source);
-                    run_job(&job_source, path, cli.dry_run)
-                } else {
-                    log::error!("No path specified. Usage: reformat --job <file|-> <path>");
-                    std::process::exit(1);
-                }
-            } else if let Some(path) = cli.path {
-                // Default command: run combined processing
-                debug!("Running combined processing (default command)");
-                run_combined(path, cli.recursive, cli.dry_run)
-            } else {
-                // Neither command nor path specified - print help
-                log::error!("No command or path specified. Use --help for usage information.");
-                std::process::exit(1);
-            }
-        }
-
-        Some(cmd) => match cmd {
-            Commands::Convert {
-                from_camel,
-                from_pascal,
-                from_snake,
-                from_screaming_snake,
-                from_kebab,
-                from_screaming_kebab,
-                to_camel,
-                to_pascal,
-                to_snake,
-                to_screaming_snake,
-                to_kebab,
-                to_screaming_kebab,
-                path,
-                recursive,
-                dry_run,
-                extensions,
-                prefix,
-                suffix,
+    match command {
+        Commands::Convert {
+            from_camel,
+            from_pascal,
+            from_snake,
+            from_screaming_snake,
+            from_kebab,
+            from_screaming_kebab: _,
+            to_camel,
+            to_pascal,
+            to_snake,
+            to_screaming_snake,
+            to_kebab,
+            to_screaming_kebab: _,
+            common,
+            recursive,
+            prefix,
+            suffix,
+            strip_prefix,
+            strip_suffix,
+            replace_prefix_from,
+            replace_prefix_to,
+            replace_suffix_from,
+            replace_suffix_to,
+            glob,
+            word_filter,
+            allow_dirty,
+        } => {
+            let cfg = ConvertConfig {
+                from_format: Some(
+                    selected_format(
+                        from_camel,
+                        from_pascal,
+                        from_snake,
+                        from_screaming_snake,
+                        from_kebab,
+                    )
+                    .to_string(),
+                ),
+                to_format: Some(
+                    selected_format(to_camel, to_pascal, to_snake, to_screaming_snake, to_kebab)
+                        .to_string(),
+                ),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursive),
+                prefix: Some(prefix),
+                suffix: Some(suffix),
+                glob,
+                word_filter,
                 strip_prefix,
                 strip_suffix,
                 replace_prefix_from,
                 replace_prefix_to,
                 replace_suffix_from,
                 replace_suffix_to,
-                glob,
-                word_filter,
-            } => {
-                debug!("Running convert subcommand");
-                run_convert(
-                    from_camel,
-                    from_pascal,
-                    from_snake,
-                    from_screaming_snake,
-                    from_kebab,
-                    from_screaming_kebab,
-                    to_camel,
-                    to_pascal,
-                    to_snake,
-                    to_screaming_snake,
-                    to_kebab,
-                    to_screaming_kebab,
-                    path,
-                    recursive,
-                    dry_run,
-                    extensions,
-                    prefix,
-                    suffix,
-                    strip_prefix,
-                    strip_suffix,
-                    replace_prefix_from,
-                    replace_prefix_to,
-                    replace_suffix_from,
-                    replace_suffix_to,
-                    glob,
-                    word_filter,
-                )
-            }
+            };
+            run_single_step(
+                "convert",
+                Preset {
+                    convert: Some(cfg),
+                    ..preset_of("convert")
+                },
+                &common,
+                allow_dirty,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!("Converted {} identifier(s) in {} file(s)", units, files)
+                },
+                "No changes needed",
+            )
+        }
 
-            Commands::Clean {
-                path,
-                recursive,
-                dry_run,
-                extensions,
-            } => {
-                debug!("Running clean subcommand");
-                run_clean(path, recursive, dry_run, extensions)
-            }
+        Commands::Clean {
+            common,
+            recursion,
+            final_newline,
+            trim_blank_lines,
+        } => {
+            let cfg = CleanConfig {
+                remove_trailing: Some(true),
+                insert_final_newline: Some(final_newline),
+                trim_trailing_blank_lines: Some(trim_blank_lines),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "clean",
+                Preset {
+                    clean: Some(cfg),
+                    ..preset_of("clean")
+                },
+                &common,
+                false,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!("Cleaned {} lines in {} file(s)", units, files)
+                },
+                "No files needed cleaning",
+            )
+        }
 
-            Commands::Emojis {
-                path,
-                recursive,
-                dry_run,
-                extensions,
-                replace_task,
-                remove_other,
-            } => {
-                debug!("Running emojis subcommand");
-                run_emojis(
-                    path,
-                    recursive,
-                    dry_run,
-                    extensions,
-                    replace_task,
-                    remove_other,
-                )
-            }
+        Commands::Emojis {
+            common,
+            recursion,
+            replace_task: _,
+            no_replace_task,
+            remove_other: _,
+            no_remove_other,
+        } => {
+            let cfg = EmojiConfig {
+                replace_task_emojis: Some(!no_replace_task),
+                remove_other_emojis: Some(!no_remove_other),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "emojis",
+                Preset {
+                    emojis: Some(cfg),
+                    ..preset_of("emojis")
+                },
+                &common,
+                false,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!(
+                        "Transformed emojis in {} file(s) ({} changes)",
+                        files, units
+                    )
+                },
+                "No files contained emojis to transform",
+            )
+        }
 
-            Commands::RenameFiles {
-                path,
-                recursive,
-                dry_run,
-                include_symlinks,
-                to_lowercase,
-                to_uppercase,
-                to_capitalize,
-                underscored,
-                hyphenated,
+        Commands::RenameFiles {
+            common,
+            recursion,
+            include_symlinks,
+            to_lowercase,
+            to_uppercase,
+            to_capitalize,
+            underscored,
+            hyphenated,
+            add_prefix,
+            rm_prefix,
+            add_suffix,
+            rm_suffix,
+            replace_prefix,
+            replace_suffix,
+            timestamp_long,
+            timestamp_short,
+            allow_dirty,
+        } => {
+            let case_transform = if to_lowercase {
+                Some("lowercase")
+            } else if to_uppercase {
+                Some("uppercase")
+            } else if to_capitalize {
+                Some("capitalize")
+            } else {
+                None
+            };
+            let space_replace = if underscored {
+                Some("underscore")
+            } else if hyphenated {
+                Some("hyphen")
+            } else {
+                None
+            };
+            let timestamp = if timestamp_long {
+                Some("long")
+            } else if timestamp_short {
+                Some("short")
+            } else {
+                None
+            };
+
+            let cfg = RenameConfig {
+                case_transform: case_transform.map(String::from),
+                space_replace: space_replace.map(String::from),
+                recursive: Some(recursion.enabled()),
+                include_symlinks: Some(include_symlinks),
                 add_prefix,
-                rm_prefix,
+                remove_prefix: rm_prefix,
                 add_suffix,
-                rm_suffix,
+                remove_suffix: rm_suffix,
                 replace_prefix,
                 replace_suffix,
-                timestamp_long,
-                timestamp_short,
-            } => {
-                debug!("Running rename subcommand");
-                run_rename(
-                    path,
-                    recursive,
-                    dry_run,
-                    include_symlinks,
-                    to_lowercase,
-                    to_uppercase,
-                    to_capitalize,
-                    underscored,
-                    hyphenated,
-                    add_prefix,
-                    rm_prefix,
-                    add_suffix,
-                    rm_suffix,
-                    replace_prefix,
-                    replace_suffix,
-                    timestamp_long,
-                    timestamp_short,
-                )
-            }
+                timestamp: timestamp.map(String::from),
+                file_extensions: common.extensions.clone(),
+            };
+            run_single_step(
+                "rename",
+                Preset {
+                    rename: Some(cfg),
+                    ..preset_of("rename")
+                },
+                &common,
+                allow_dirty,
+                |o| format!("Renamed {} file(s)", o.files()),
+                "No files needed renaming",
+            )
+        }
 
-            Commands::Group {
-                path,
-                recursive,
-                dry_run,
-                separator,
-                min_count,
-                strip_prefix,
-                from_suffix,
-                preview,
-                no_interactive,
-                scope,
-                verbose_scan,
-                changes_file,
-                fixes_file,
-            } => {
-                debug!("Running group subcommand");
-                run_group(
-                    path,
-                    recursive,
-                    dry_run,
-                    separator,
-                    min_count,
-                    strip_prefix,
-                    from_suffix,
-                    preview,
-                    no_interactive,
-                    scope,
-                    verbose_scan,
-                    changes_file,
-                    fixes_file,
-                )
-            }
+        Commands::Group {
+            path,
+            recursive,
+            dry_run,
+            separator,
+            min_count,
+            strip_prefix,
+            from_suffix,
+            preview,
+            no_interactive,
+            scope,
+            verbose_scan,
+            changes_file,
+            fixes_file,
+            allow_dirty,
+        } => run_group(
+            path,
+            recursive,
+            dry_run,
+            separator,
+            min_count,
+            strip_prefix,
+            from_suffix,
+            preview,
+            no_interactive,
+            scope,
+            verbose_scan,
+            changes_file,
+            fixes_file,
+            allow_dirty,
+        ),
 
-            Commands::Endings {
-                path,
-                style,
-                recursive,
-                dry_run,
-                extensions,
-            } => {
-                debug!("Running endings subcommand");
-                run_endings(path, &style, recursive, dry_run, extensions)
-            }
+        Commands::Endings {
+            common,
+            recursion,
+            style,
+        } => {
+            let cfg = EndingsConfig {
+                style: Some(style),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "endings",
+                Preset {
+                    endings: Some(cfg),
+                    ..preset_of("endings")
+                },
+                &common,
+                false,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!("Normalized {} ending(s) in {} file(s)", units, files)
+                },
+                "No files needed line ending normalization",
+            )
+        }
 
-            Commands::Indent {
-                path,
-                style,
-                width,
-                recursive,
-                dry_run,
-                extensions,
-            } => {
-                debug!("Running indent subcommand");
-                run_indent(path, &style, width, recursive, dry_run, extensions)
-            }
+        Commands::Indent {
+            common,
+            recursion,
+            style,
+            width,
+        } => {
+            let cfg = IndentConfig {
+                style: Some(style),
+                width: Some(width),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "indent",
+                Preset {
+                    indent: Some(cfg),
+                    ..preset_of("indent")
+                },
+                &common,
+                false,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!("Normalized {} line(s) in {} file(s)", units, files)
+                },
+                "No files needed indentation normalization",
+            )
+        }
 
-            Commands::Replace {
-                path,
-                find,
-                replace_with,
-                recursive,
-                dry_run,
-                extensions,
-            } => {
-                debug!("Running replace subcommand");
-                run_replace(path, &find, &replace_with, recursive, dry_run, extensions)
+        Commands::Replace {
+            common,
+            recursion,
+            find,
+            replace_with,
+            literal,
+            ignore_case,
+            allow_dirty,
+        } => {
+            if find.len() != replace_with.len() {
+                anyhow::bail!(
+                    "--find was given {} time(s) and --replace-with {}; they pair in order",
+                    find.len(),
+                    replace_with.len()
+                );
             }
+            let cfg = ReplaceConfig {
+                patterns: Some(
+                    find.into_iter()
+                        .zip(replace_with)
+                        .map(|(find, replace)| ReplacePatternEntry {
+                            find,
+                            replace,
+                            literal,
+                            ignore_case,
+                        })
+                        .collect(),
+                ),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "replace",
+                Preset {
+                    replace: Some(cfg),
+                    ..preset_of("replace")
+                },
+                &common,
+                allow_dirty,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!("Made {} replacement(s) in {} file(s)", units, files)
+                },
+                "No files matched the pattern",
+            )
+        }
 
-            Commands::Header {
-                path,
-                text,
-                update_year,
-                recursive,
-                dry_run,
-                extensions,
-            } => {
-                debug!("Running header subcommand");
-                run_header(path, &text, update_year, recursive, dry_run, extensions)
+        Commands::Header {
+            common,
+            recursion,
+            text,
+            update_year,
+        } => {
+            let cfg = HeaderConfig {
+                // Allow \n in the argument to stand for a real newline.
+                text: Some(text.replace("\\n", "\n")),
+                update_year: Some(update_year),
+                file_extensions: common.extensions.clone(),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "header",
+                Preset {
+                    header: Some(cfg),
+                    ..preset_of("header")
+                },
+                &common,
+                false,
+                |o| format!("Updated headers in {} file(s)", o.files()),
+                "All files already have correct headers",
+            )
+        }
+
+        Commands::Editorconfig {
+            common,
+            recursion,
+            indent,
+        } => {
+            if common.extensions.is_some() {
+                anyhow::bail!("editorconfig selects files from .editorconfig; use --include or --exclude instead of -e");
             }
-        },
-    };
+            let cfg = EditorConfigConfig {
+                indent: Some(indent),
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "editorconfig",
+                Preset {
+                    editorconfig: Some(cfg),
+                    ..preset_of("editorconfig")
+                },
+                &common,
+                false,
+                |o| {
+                    let (files, units) = counted(o);
+                    format!(
+                        "Applied EditorConfig to {} file(s) ({} changes)",
+                        files, units
+                    )
+                },
+                "All files already match .editorconfig",
+            )
+        }
 
-    if result.is_ok() {
-        debug!("Operation completed successfully");
+        Commands::ApplyFixes {
+            fixes_file,
+            dry_run,
+        } => run_apply_fixes(&fixes_file, dry_run),
+
+        Commands::Presets => run_list_presets(cli.config.as_deref()),
+
+        Commands::Completions { shell } => {
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "reformat", &mut script);
+            write_stdout(&script)?;
+            Ok(false)
+        }
+
+        Commands::Man { out_dir } => {
+            match out_dir {
+                Some(dir) => {
+                    std::fs::create_dir_all(&dir)?;
+                    clap_mangen::generate_to(Cli::command(), &dir)?;
+                    info!("Wrote man pages to {}", dir.display());
+                }
+                None => {
+                    let mut page = Vec::new();
+                    clap_mangen::Man::new(Cli::command()).render(&mut page)?;
+                    write_stdout(&page)?;
+                }
+            }
+            Ok(false)
+        }
     }
+}
 
-    // The error itself is reported once, by anyhow's top-level handler.
-    result
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    let stderr_only = match &cli.command {
+        None => cli.run.stdout_is_data(),
+        Some(Commands::Completions { .. } | Commands::Man { out_dir: None }) => true,
+        Some(command) => command.common().is_some_and(|c| c.run.stdout_is_data()),
+    };
+    if let Err(e) = init_logging(cli.verbose, cli.quiet, cli.log_file.clone(), stderr_only) {
+        eprintln!("Warning: Failed to initialize logging: {}", e);
+    }
+    debug!("CLI arguments parsed successfully");
+
+    match run(cli) {
+        Ok(false) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::from(1),
+        // A reader such as `head` closed stdout early; stop quietly.
+        Err(e)
+            if e.downcast_ref::<io::Error>()
+                .is_some_and(|io| io.kind() == io::ErrorKind::BrokenPipe) =>
+        {
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            ExitCode::from(2)
+        }
+    }
 }

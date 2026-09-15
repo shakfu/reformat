@@ -5,8 +5,9 @@
 //! user actually pointed it at. A transformer that walks into `.git/` can
 //! destroy a repository irrecoverably, since renames are not journalled.
 
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_reformat")
@@ -116,10 +117,11 @@ fn test_default_command_does_not_touch_git_metadata() {
     run(dir, &["-r", "."]);
 
     assert_repo_intact(dir, "default command (-r .)");
-    // The default pipeline lowercases filenames; confirm it actually ran.
-    assert!(
-        dir.join("notes.md").exists(),
-        "default command did not lowercase Notes.md -- the test would pass vacuously"
+    // Confirm the pipeline actually ran, so the test cannot pass vacuously.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Notes.md")).unwrap(),
+        "Body\n",
+        "default command did not clean Notes.md"
     );
 }
 
@@ -134,7 +136,18 @@ fn test_convert_does_not_touch_git_metadata() {
     init_repo(dir);
     std::fs::write(dir.join("code.py"), "someName = 1\n").unwrap();
 
-    run(dir, &["convert", "--from-camel", "--to-snake", "-r", "."]);
+    // code.py is untracked, so the dirty-tree guard needs --allow-dirty.
+    run(
+        dir,
+        &[
+            "convert",
+            "--from-camel",
+            "--to-snake",
+            "-r",
+            "--allow-dirty",
+            ".",
+        ],
+    );
 
     assert_repo_intact(dir, "convert --from-camel --to-snake");
     let converted = std::fs::read_to_string(dir.join("code.py")).unwrap();
@@ -224,4 +237,217 @@ fn test_explicit_hidden_file_is_still_skipped() {
         "line1  \n",
         "hidden files must be skipped even when named explicitly"
     );
+}
+
+fn names(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != ".git")
+        .collect();
+    v.sort();
+    v
+}
+
+/// Renames, groups, conversions and replacements over uncommitted work
+/// cannot be separated from the user's edits or undone with git.
+#[test]
+fn test_destructive_commands_refuse_uncommitted_changes() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::write(dir.join("Notes.md"), "edited\n").unwrap();
+
+    let out = run(dir, &["rename_files", "--to-uppercase", "."]);
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Notes.md"));
+    assert_eq!(names(dir), ["Notes.md", "README.md"]);
+
+    let out = run(
+        dir,
+        &["replace", "-f", "edited", "--replace-with", "x", "."],
+    );
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Notes.md")).unwrap(),
+        "edited\n"
+    );
+
+    std::fs::write(
+        dir.join("job.json"),
+        r#"{"steps": ["replace"], "replace": {"patterns": [{"find": "edited", "replace": "x"}]}}"#,
+    )
+    .unwrap();
+    let out = run(dir, &["--job", "job.json", "Notes.md"]);
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+
+    // Previews and --allow-dirty still work.
+    let out = run(
+        dir,
+        &[
+            "replace",
+            "-f",
+            "edited",
+            "--replace-with",
+            "x",
+            "--diff",
+            ".",
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    let out = run(dir, &["--job", "job.json", "--allow-dirty", "Notes.md"]);
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Notes.md")).unwrap(),
+        "x\n"
+    );
+}
+
+#[test]
+fn test_untracked_files_count_as_uncommitted() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::write(dir.join("new.py"), "someName = 1\n").unwrap();
+
+    let out = run(dir, &["convert", "--from-camel", "--to-snake", "new.py"]);
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("new.py")).unwrap(),
+        "someName = 1\n"
+    );
+}
+
+/// Only the paths a command touches are checked, and hygiene commands such
+/// as `clean` are not guarded: pre-commit runs them on staged files.
+#[test]
+fn test_guard_scope() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::write(dir.join("Notes.md"), "edited  \n").unwrap();
+
+    let out = run(dir, &["rename_files", "--to-uppercase", "README.md"]);
+    assert!(out.status.success(), "{:?}", out);
+
+    let out = run(dir, &["clean", "Notes.md"]);
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Notes.md")).unwrap(),
+        "edited\n"
+    );
+}
+
+#[test]
+fn test_group_refuses_uncommitted_changes() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::create_dir(dir.join("t")).unwrap();
+    std::fs::write(dir.join("t/a_1.txt"), "x").unwrap();
+    std::fs::write(dir.join("t/a_2.txt"), "x").unwrap();
+
+    let out = run(dir, &["group", "--no-interactive", "t"]);
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    assert!(dir.join("t/a_1.txt").exists());
+
+    let out = run(dir, &["group", "--no-interactive", "--allow-dirty", "t"]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(dir.join("t/a/a_1.txt").exists());
+}
+
+/// Scan directories typed at the interactive prompt are chosen after the
+/// initial guard, so fixes to files with uncommitted changes are refused
+/// at the point of applying them.
+#[test]
+fn test_interactive_group_refuses_to_fix_uncommitted_files() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let commit = |dir: &Path| {
+        assert!(git(dir, &["add", "."]));
+        assert!(git(
+            dir,
+            &[
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "c"
+            ],
+        ));
+    };
+    let answer = |dir: &Path, extra: &[&str]| {
+        let mut child = Command::new(binary())
+            .args(["group", "--strip-prefix"])
+            .args(extra)
+            .arg("t")
+            .current_dir(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Scan? yes. Directories: src. Apply? yes.
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"y\nsrc\ny\n")
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    for (allow, expected) in [
+        (false, "load(\"wbs_a.tmpl\") // edited\n"),
+        (true, "load(\"wbs/a.tmpl\") // edited\n"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        assert!(git(dir, &["init", "-q"]));
+        std::fs::create_dir_all(dir.join("t")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("t/wbs_a.tmpl"), "x").unwrap();
+        std::fs::write(dir.join("t/wbs_b.tmpl"), "x").unwrap();
+        std::fs::write(dir.join("src/main.go"), "load(\"wbs_a.tmpl\")\n").unwrap();
+        commit(dir);
+        std::fs::write(dir.join("src/main.go"), "load(\"wbs_a.tmpl\") // edited\n").unwrap();
+
+        let extra: &[&str] = if allow { &["--allow-dirty"] } else { &[] };
+        let out = answer(dir, extra);
+
+        assert!(
+            dir.join("t/wbs/a.tmpl").exists(),
+            "the grouping itself should run"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/main.go")).unwrap(),
+            expected
+        );
+        if allow {
+            assert!(out.status.success(), "{:?}", out);
+        } else {
+            assert_eq!(out.status.code(), Some(2), "{:?}", out);
+            assert!(String::from_utf8_lossy(&out.stderr).contains("apply_fixes"));
+        }
+    }
 }
