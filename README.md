@@ -212,7 +212,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reformat-core = "0.2.0"
+reformat-core = "0.3.0"
 ```
 
 ### Case Conversion
@@ -430,7 +430,7 @@ To run reformat from [pre-commit](https://pre-commit.com), install the binary
 ```yaml
 repos:
   - repo: https://github.com/shakfu/reformat
-    rev: v0.2.0
+    rev: v0.3.0
     hooks:
       - id: reformat-clean         # trailing whitespace, final newline, trailing blank lines
       - id: reformat-endings       # LF line endings

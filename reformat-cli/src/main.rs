@@ -206,6 +206,8 @@ impl Recursion {
     }
 }
 
+// Doc comments are clap help text; `<old> <new>` and `[x]` are meant literally.
+#[allow(rustdoc::invalid_html_tags, rustdoc::broken_intra_doc_links)]
 #[derive(Subcommand)]
 enum Commands {
     /// Convert between case formats

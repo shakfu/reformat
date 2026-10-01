@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-01
+
+This release breaks the library API. See Changed.
+
 ### Changed
 
 - Library: `ChangeRecord::add_directory_created`, `add_file_moved` and
