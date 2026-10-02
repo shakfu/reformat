@@ -119,8 +119,7 @@ pub(crate) fn accepts_by_extension<S: AsRef<str>>(
 /// build directory name, as their directory walks do.
 fn skipped_by_name(path: &Path) -> bool {
     path.file_name()
-        .and_then(|n| n.to_str())
-        .is_none_or(|n| crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS))
+        .is_none_or(|n| crate::walk::is_excluded_name(n, crate::walk::DEFAULT_SKIP_DIRS))
 }
 
 /// Receives a changed file with its original and new contents.
@@ -340,17 +339,26 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> crate::Result<()> {
     let dir = target
         .parent()
         .ok_or_else(|| anyhow::anyhow!("no parent directory for '{}'", target.display()))?;
-    let name = target
+    let mut name = target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // The suffix adds about 20 bytes; a 255-byte name limit must still hold.
+    let mut cut = name.len().min(200);
+    while !name.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    name.truncate(cut);
     let tmp = dir.join(format!(".{}.reformat-{}.tmp", name, std::process::id()));
 
     let result = (|| -> crate::Result<()> {
-        let mut out = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Owner-only until the original's permissions are copied, so a
+        // private file is not readable by others while it is written.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut out = options.open(&tmp)?;
         out.write_all(contents)?;
         out.sync_all()?;
         drop(out);
@@ -616,5 +624,15 @@ mod tests {
         write_atomic(&a, b"new").unwrap();
 
         assert_eq!(fs::read_to_string(&b).unwrap(), "new");
+    }
+
+    /// A name near the 255-byte limit leaves room for the temporary suffix.
+    #[test]
+    fn test_write_atomic_long_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(format!("{}.txt", "a".repeat(240)));
+        fs::write(&path, "x").unwrap();
+        write_atomic(&path, b"y").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"y");
     }
 }

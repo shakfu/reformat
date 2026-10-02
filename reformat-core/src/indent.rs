@@ -65,8 +65,13 @@ pub struct IndentNormalizer {
 }
 
 impl IndentNormalizer {
-    /// Creates a new normalizer with the given options
+    /// Creates a new normalizer with the given options.
+    ///
+    /// A `width` of 0 has no tab stops, so such a normalizer changes nothing.
     pub fn new(options: IndentOptions) -> Self {
+        if options.width == 0 {
+            log::warn!("Indent width 0 is invalid; indentation is left unchanged");
+        }
         IndentNormalizer { options }
     }
 
@@ -151,11 +156,12 @@ impl ContentStep for IndentNormalizer {
     }
 
     fn accepts(&self, file: &FileTarget) -> bool {
-        crate::step::accepts_by_extension(
-            file,
-            &self.options.file_extensions,
-            self.options.recursive,
-        )
+        self.options.width > 0
+            && crate::step::accepts_by_extension(
+                file,
+                &self.options.file_extensions,
+                self.options.recursive,
+            )
     }
 
     fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
@@ -448,5 +454,17 @@ mod tests {
 
         assert_eq!(files, 2);
         assert_eq!(lines, 2);
+    }
+
+    #[test]
+    fn test_zero_width_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.py");
+        fs::write(&file, "\tx\n").unwrap();
+        let normalizer = IndentNormalizer::new(IndentOptions {
+            width: 0,
+            ..Default::default()
+        });
+        assert_eq!(normalizer.normalize_file(&file).unwrap(), 0);
     }
 }

@@ -137,8 +137,11 @@ no undo, and only `group` records what it did.
 
 - Run against a clean working tree, or a backup. `rename_files`, `group`,
   `convert` and `replace` enforce this: they refuse to modify paths with
-  uncommitted changes or untracked files in git, unless given `--allow-dirty`.
-  So do presets and jobs containing those steps. Previews are never refused.
+  uncommitted changes, untracked files or gitignored files in git, unless
+  given `--allow-dirty`. Gitignored files count when named directly or walked
+  with `--no-ignore`. So do presets and jobs containing those steps. Previews
+  are never refused. If git fails for any reason other than "not a git
+  repository", the run is refused.
 - Try `--diff` first. It shows exactly what would change and writes nothing.
 - Start narrow. `--extensions`, `--include` and `--exclude` limit the blast
   radius.
@@ -160,11 +163,14 @@ Related limits worth knowing:
   PascalCase candidate, so ordinary prose is left alone.
 - `indent` rewrites leading whitespace only. It cannot tell an indentation tab
   from an alignment tab, so hand-aligned continuation lines may shift.
-- `emojis` removes characters by Unicode range. Genuine emoji are removed and
-  ordinary text symbols such as card suits and musical notes are preserved, but
-  the boundary between the two is a judgement call, not a standard.
+- `emojis` removes characters with the Unicode `Emoji` property, and whole
+  emoji sequences. Text symbols are kept: card suits, musical notes, chess
+  pieces, stars, gender signs, arrows. The boundary between the two is a
+  judgement call, not a standard.
 - `group`'s reference fixing matches filenames, and only rewrites the exact
-  occurrences it recorded. Review `fixes.json` before applying it.
+  occurrences it recorded. A bare name such as `a_1.txt` becomes the new path
+  relative to the file's old directory, `a/a_1.txt`. Review `fixes.json`
+  before applying it.
 
 ## Installation
 
@@ -416,8 +422,8 @@ reformat clean --check --final-newline .
 # Show what a preset would change
 reformat -p normalize --diff src/
 
-# Run on the files a hook passes
-reformat clean --check $(git diff --cached --name-only --diff-filter=d)
+# Run on the staged files (handles spaces, leading dashes and an empty list)
+git diff --cached --name-only --diff-filter=d -z | xargs -0 -r reformat clean --check --
 ```
 
 In a diff, a carriage return is shown as `\r`, so line-ending changes are
@@ -684,6 +690,8 @@ reformat apply_fixes fixes.json
 ```
 
 A fix whose recorded text no longer matches the file is skipped.
+`apply_fixes` refuses files with uncommitted changes, as `group` does, unless
+given `--allow-dirty`.
 
 A `group` step in a preset or job also writes `changes.json`. It takes exactly
 one directory.

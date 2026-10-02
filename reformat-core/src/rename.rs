@@ -1,5 +1,6 @@
 //! File renaming transformer
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -140,9 +141,9 @@ impl FileRenamer {
 
         // Hidden and build-directory names, unless the caller selected them.
         if skip_hidden
-            && path.file_name().and_then(|n| n.to_str()).is_none_or(|n| {
-                crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS)
-            })
+            && path
+                .file_name()
+                .is_none_or(|n| crate::walk::is_excluded_name(n, crate::walk::DEFAULT_SKIP_DIRS))
         {
             return false;
         }
@@ -297,14 +298,11 @@ impl FileRenamer {
     ///
     /// Hidden names are skipped. Paths inside `.git` are always refused.
     pub fn rename_file(&self, path: &Path, is_symlink: bool) -> crate::Result<bool> {
-        self.rename_one(path, is_symlink, true)
+        self.rename_one(path, is_symlink, true, &mut HashSet::new())
     }
 
-    fn rename_one(&self, path: &Path, is_symlink: bool, skip_hidden: bool) -> crate::Result<bool> {
-        if !self.should_process(path, is_symlink, skip_hidden) {
-            return Ok(false);
-        }
-
+    /// The path `path` would be renamed to, or `None` if its name is unchanged.
+    pub(crate) fn target_path(&self, path: &Path) -> crate::Result<Option<PathBuf>> {
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -327,31 +325,42 @@ impl FileRenamer {
 
         let new_name = self.transform_name(name, extension, timestamp);
 
-        // If name didn't change, nothing to do
         if new_name == file_name {
-            return Ok(false);
+            return Ok(None);
         }
 
         let parent = path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("No parent directory"))?;
         let new_path = parent.join(&new_name);
+        Ok(Some(new_path))
+    }
 
-        // Check if target already exists (but allow case-only renames on case-insensitive filesystems)
-        if new_path.exists() {
-            // Check if this is the same file (case-insensitive filesystems)
-            // Use canonicalize to resolve to the actual path
-            let same_file = match (path.canonicalize(), new_path.canonicalize()) {
-                (Ok(p1), Ok(p2)) => p1 == p2,
-                _ => false,
-            };
+    /// `claimed` holds the targets of earlier renames in this run, so a dry
+    /// run detects two files that map to one name.
+    fn rename_one(
+        &self,
+        path: &Path,
+        is_symlink: bool,
+        skip_hidden: bool,
+        claimed: &mut HashSet<PathBuf>,
+    ) -> crate::Result<bool> {
+        if !self.should_process(path, is_symlink, skip_hidden) {
+            return Ok(false);
+        }
 
-            if !same_file {
-                return Err(anyhow::anyhow!(
-                    "Target file already exists: '{}'",
-                    new_path.display()
-                ));
-            }
+        let Some(new_path) = self.target_path(path)? else {
+            return Ok(false);
+        };
+
+        // A target that exists is only acceptable for a case-only rename on a
+        // case-insensitive filesystem, where both names are one entry.
+        let taken = new_path.symlink_metadata().is_ok() && !same_entry(path, &new_path);
+        if taken || !claimed.insert(new_path.clone()) {
+            return Err(anyhow::anyhow!(
+                "Target file already exists: '{}'",
+                new_path.display()
+            ));
         }
 
         if self.options.dry_run {
@@ -417,9 +426,10 @@ impl FileRenamer {
                 .cmp(&a.0.components().count())
                 .then_with(|| a.0.cmp(&b.0))
         });
+        let mut claimed = HashSet::new();
         for (file_path, is_symlink) in files {
             self.record(
-                self.rename_one(&file_path, is_symlink, false),
+                self.rename_one(&file_path, is_symlink, false, &mut claimed),
                 &file_path,
                 &mut stats,
             );
@@ -439,6 +449,34 @@ impl FileRenamer {
                 stats.skipped += 1;
             }
         }
+    }
+}
+
+/// True if `a` and `b` name the same directory entry, as two spellings of one
+/// name on a case-insensitive filesystem do. Symbolic links are not followed:
+/// a link and its target are different entries, and renaming one over the
+/// other destroys the target.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    let (Some(na), Some(nb)) = (a.file_name(), b.file_name()) else {
+        return false;
+    };
+    // Hard links share an inode but are distinct names.
+    if na.to_string_lossy().to_lowercase() != nb.to_string_lossy().to_lowercase() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (a.symlink_metadata(), b.symlink_metadata()) {
+            (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+            _ => false,
+        }
+    }
+    // Without inode numbers, a case-only clash that exists is taken to be
+    // the case-insensitive filesystem Windows normally has.
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
@@ -1555,5 +1593,49 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(git, ["HEAD"]);
+    }
+
+    /// A symlink whose new name is its own target must not replace the target.
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_onto_its_target_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(dir.join("a_b.txt"), "DATA").unwrap();
+        std::os::unix::fs::symlink("a_b.txt", dir.join("a b.txt")).unwrap();
+
+        let renamer = FileRenamer::new(RenameOptions {
+            space_replace: SpaceReplace::Underscore,
+            include_symlinks: true,
+            ..Default::default()
+        });
+        let stats = renamer.process_with_stats(dir).unwrap();
+
+        assert_eq!(stats.renamed, 0);
+        assert_eq!(stats.skipped, 1);
+        assert!(!fs::symlink_metadata(dir.join("a_b.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(dir.join("a_b.txt")).unwrap(), "DATA");
+    }
+
+    /// A dry run reports the same collision the real run would hit.
+    #[test]
+    fn test_dry_run_detects_collision_within_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(dir.join("a b.txt"), "x").unwrap();
+        fs::write(dir.join("a-b.txt"), "y").unwrap();
+
+        let renamer = FileRenamer::new(RenameOptions {
+            space_replace: SpaceReplace::Underscore,
+            dry_run: true,
+            ..Default::default()
+        });
+        let stats = renamer.process_with_stats(dir).unwrap();
+
+        assert_eq!(stats.renamed, 1);
+        assert_eq!(stats.skipped, 1);
     }
 }

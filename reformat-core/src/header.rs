@@ -86,13 +86,20 @@ impl HeaderManager {
     /// Byte offset at which a header may legitimately begin: the start of the
     /// file, skipping a shebang line and any leading blank lines.
     fn header_zone(content: &str) -> usize {
-        let mut pos = 0;
-        if content.starts_with("#!") {
-            pos = content.find('\n').map(|i| i + 1).unwrap_or(content.len());
-        }
+        let pos = Self::shebang_end(content);
         let rest = &content[pos..];
         let trimmed = rest.trim_start_matches(['\n', '\r', ' ', '\t']);
         pos + (rest.len() - trimmed.len())
+    }
+
+    /// Byte offset just past a shebang line and its terminator, or 0.
+    fn shebang_end(content: &str) -> usize {
+        if !content.starts_with("#!") {
+            return 0;
+        }
+        crate::lines::split_lines(content)
+            .next()
+            .map_or(content.len(), |(line, end)| line.len() + end.len())
     }
 
     /// Process a single file. Returns true if the file was modified (or would be in dry-run).
@@ -141,6 +148,13 @@ impl ContentStep for HeaderManager {
             if let Some(m) = detector
                 .find_at(content, zone)
                 .filter(|m| m.start() == zone)
+                // The whole line must match: `Copyright 2026 A` is not a
+                // header for `Copyright 2019 AB Corp`.
+                .filter(|m| {
+                    header.ends_with(['\n', '\r'])
+                        || content[m.end()..].is_empty()
+                        || content[m.end()..].starts_with(['\n', '\r'])
+                })
             {
                 if m.as_str() == header {
                     return None;
@@ -157,16 +171,8 @@ impl ContentStep for HeaderManager {
         }
 
         // Insert after a shebang line, if there is one.
-        let split = if content.starts_with("#!") {
-            content
-                .find('\n')
-                .map(|pos| pos + 1)
-                .unwrap_or(content.len())
-        } else {
-            0
-        };
-        let (prefix, rest) = content.split_at(split);
-        let prefix_newline = if !prefix.is_empty() && !prefix.ends_with('\n') {
+        let (prefix, rest) = content.split_at(Self::shebang_end(content));
+        let prefix_newline = if !prefix.is_empty() && !prefix.ends_with(['\n', '\r']) {
             newline
         } else {
             ""
@@ -551,5 +557,31 @@ mod tests {
     #[test]
     fn test_shebang_without_trailing_newline() {
         assert_eq!(apply("#!/bin/sh", "# H"), "#!/bin/sh\n# H\n\n");
+    }
+
+    fn manager(text: &str) -> HeaderManager {
+        HeaderManager::new(HeaderOptions {
+            text: text.to_string(),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn test_header_must_match_whole_line() {
+        let m = manager("# Copyright 2026 A");
+        let file = FileTarget::file(Path::new("a.py"));
+        let text = "# Copyright 2019 AB Corp\nx = 1\n";
+        let (out, _) = m.transform(text, &file).unwrap();
+        assert_eq!(out, format!("# Copyright 2026 A\n\n{}", text));
+    }
+
+    #[test]
+    fn test_shebang_in_cr_file() {
+        let m = manager("# H");
+        let file = FileTarget::file(Path::new("a.py"));
+        let (out, _) = m.transform("#!/bin/sh\rx\r", &file).unwrap();
+        assert_eq!(out, "#!/bin/sh\r# H\r\rx\r");
+        assert!(m.transform(&out, &file).is_none());
     }
 }

@@ -102,6 +102,9 @@ pub struct ScanOptions {
     pub recursive: bool,
     /// Whether to print verbose output during scanning
     pub verbose: bool,
+    /// Files never scanned, such as the change and fix records. A record
+    /// names every moved file, so scanning it rewrites the record.
+    pub skip_files: Vec<PathBuf>,
 }
 
 impl Default for ScanOptions {
@@ -145,6 +148,7 @@ impl Default for ScanOptions {
             ],
             recursive: true,
             verbose: false,
+            skip_files: Vec::new(),
         }
     }
 }
@@ -173,10 +177,14 @@ fn is_standalone_reference(content: &str, start: usize, end: usize) -> bool {
         .chars()
         .next_back()
         .is_none_or(|c| !is_name_char(c));
-    let after_ok = content[end..]
-        .chars()
-        .next()
-        .is_none_or(|c| !is_name_char(c));
+    // A `.` ends a sentence unless a name character follows it, as in
+    // `user_list.tmpl.bak`.
+    let mut after = content[end..].chars();
+    let after_ok = match after.next() {
+        None => true,
+        Some('.') => after.next().is_none_or(|c| !is_name_char(c)),
+        Some(c) => !is_name_char(c),
+    };
     before_ok && after_ok
 }
 
@@ -192,22 +200,51 @@ pub struct ReferenceScanner {
 }
 
 impl ReferenceScanner {
-    /// Creates a new reference scanner from a change record
+    /// Creates a new reference scanner from a change record.
+    ///
+    /// Each move is matched by its recorded path and by its bare file name.
+    /// A bare name is replaced by the new path relative to the file's old
+    /// directory (`x_1.txt` becomes `x/x_1.txt`), so a reference keeps the
+    /// directory part it was written with. A file name whose moves differ in
+    /// that relative path is matched by recorded path only, since a bare
+    /// reference to it cannot be resolved.
     pub fn from_change_record(record: &ChangeRecord, options: ScanOptions) -> crate::Result<Self> {
         let mut file_moves = HashMap::new();
+        let mut by_name: HashMap<String, Option<String>> = HashMap::new();
 
         for (from, to) in record.file_moves() {
-            // Extract just the filename from the 'from' path
             let from_filename = Path::new(from)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(from);
 
-            file_moves.insert(from_filename.to_string(), to.to_string());
+            // Records store `/` separators. `to` relative to `from`'s directory.
+            let tail = match from.rfind('/') {
+                Some(i) => to.strip_prefix(&from[..=i]).unwrap_or(to),
+                None => to,
+            };
+            by_name
+                .entry(from_filename.to_string())
+                .and_modify(|seen| {
+                    if seen.as_deref() != Some(tail) {
+                        *seen = None;
+                    }
+                })
+                .or_insert_with(|| Some(tail.to_string()));
 
-            // Also add the full path as a key
             if from != from_filename {
                 file_moves.insert(from.to_string(), to.to_string());
+            }
+        }
+        for (name, to) in by_name {
+            match to {
+                Some(to) => {
+                    file_moves.entry(name).or_insert(to);
+                }
+                None => log::warn!(
+                    "Several moved files are named '{}'; only references by path are fixed",
+                    name
+                ),
             }
         }
 
@@ -323,6 +360,12 @@ impl ReferenceScanner {
         let mut fix_record = FixRecord::new("changes.json", directories);
         let verbose = self.options.verbose;
         let mut files_scanned = 0;
+        let skip: Vec<PathBuf> = self
+            .options
+            .skip_files
+            .iter()
+            .filter_map(|p| fs::canonicalize(p).ok())
+            .collect();
 
         for dir in directories {
             if !dir.exists() {
@@ -350,7 +393,14 @@ impl ReferenceScanner {
                 .into_iter()
                 .filter_entry(|e| Self::should_include_entry(e, exclude_patterns, verbose));
 
-            for entry in walker.filter_map(|e| e.ok()) {
+            for entry in walker {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        log::warn!("Not scanned for references: {}", e);
+                        continue;
+                    }
+                };
                 let path = entry.path();
 
                 // Print when entering a new directory
@@ -360,6 +410,10 @@ impl ReferenceScanner {
                 }
 
                 if !path.is_file() {
+                    continue;
+                }
+
+                if !skip.is_empty() && fs::canonicalize(path).is_ok_and(|p| skip.contains(&p)) {
                     continue;
                 }
 
@@ -383,10 +437,7 @@ impl ReferenceScanner {
                         fix_record.fixes.extend(fixes);
                     }
                     Err(e) => {
-                        if verbose {
-                            log::info!("    -> Error: {}", e);
-                        }
-                        log::debug!("Skipping {}: {}", path.display(), e);
+                        log::warn!("Not scanned for references: {}: {}", path.display(), e);
                     }
                 }
             }
@@ -437,6 +488,12 @@ impl ReferenceFixer {
         by_file.sort_by(|a, b| a.0.cmp(b.0));
 
         for (file_path, fixes) in by_file {
+            if crate::walk::in_git_dir(Path::new(file_path)) {
+                result
+                    .errors
+                    .push(format!("{}: .git is never modified", file_path));
+                continue;
+            }
             match Self::apply_fixes_to_file(Path::new(file_path), &fixes) {
                 Ok(outcome) => {
                     if outcome.modified {
@@ -984,5 +1041,81 @@ template: old_file.tmpl
         // Only src/main.rs should be scanned - node_modules and .git should be excluded
         assert_eq!(fix_record.len(), 1);
         assert!(fix_record.fixes[0].file.contains("src"));
+    }
+
+    /// A bare name becomes the new path relative to the old directory, and
+    /// a reference by path keeps its directory part.
+    #[test]
+    fn test_bare_reference_is_relative_to_the_old_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut record = ChangeRecord::new("group", tmp.path());
+        record.add_file_moved("a/x_1.txt", "a/x/x_1.txt");
+        record.add_file_moved("b/x_1.txt", "b/x/x_1.txt");
+        write(tmp.path(), "readme.md", "see x_1.txt and a/x_1.txt\n");
+
+        let scanner =
+            ReferenceScanner::from_change_record(&record, ScanOptions::default()).unwrap();
+        let record = scanner.scan(&[tmp.path().to_path_buf()]).unwrap();
+        ReferenceFixer::apply_fixes(&record).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("readme.md")).unwrap(),
+            "see x/x_1.txt and a/x/x_1.txt\n"
+        );
+    }
+
+    /// Moves of one name to different relative places make a bare reference
+    /// ambiguous; it is left alone, and a reference by path is still fixed.
+    #[test]
+    fn test_ambiguous_basename_is_matched_by_path_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut record = ChangeRecord::new("group", tmp.path());
+        record.add_file_moved("a/x.txt", "a/p/x.txt");
+        record.add_file_moved("b/x.txt", "b/q/x.txt");
+        write(tmp.path(), "readme.md", "see x.txt and a/x.txt\n");
+
+        let scanner =
+            ReferenceScanner::from_change_record(&record, ScanOptions::default()).unwrap();
+        let fixes = scanner.scan(&[tmp.path().to_path_buf()]).unwrap().fixes;
+
+        assert_eq!(fixes.len(), 1, "{:?}", fixes);
+        assert_eq!(fixes[0].old_reference, "a/x.txt");
+        assert_eq!(fixes[0].new_reference, "a/p/x.txt");
+    }
+
+    /// The change record names every moved file; scanning it would rewrite it.
+    #[test]
+    fn test_skip_files_are_not_scanned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = write(tmp.path(), "changes.json", "{\"from\": \"old.txt\"}\n");
+        write(tmp.path(), "notes.md", "old.txt\n");
+
+        let mut moves = HashMap::new();
+        moves.insert("old.txt".to_string(), "new/old.txt".to_string());
+        let options = ScanOptions {
+            skip_files: vec![record],
+            ..Default::default()
+        };
+        let fixes = ReferenceScanner::new(moves, options)
+            .unwrap()
+            .scan(&[tmp.path().to_path_buf()])
+            .unwrap()
+            .fixes;
+
+        assert_eq!(fixes.len(), 1);
+        assert!(fixes[0].file.ends_with("notes.md"));
+    }
+
+    /// A reference at the end of a sentence is still a reference.
+    #[test]
+    fn test_reference_before_full_stop_is_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "notes.md", "Edit w_a.txt. Not w_a.txt.bak\n");
+        let fixes = scanner_for("w_a.txt", "w/a.txt")
+            .scan(&[tmp.path().to_path_buf()])
+            .unwrap()
+            .fixes;
+        assert_eq!(fixes.len(), 1, "{:?}", fixes);
+        assert_eq!(fixes[0].column, 6);
     }
 }

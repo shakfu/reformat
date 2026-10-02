@@ -2,11 +2,21 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use ec4rs::property::{EndOfLine, FinalNewline, IndentStyle, TabWidth, TrimTrailingWs};
 use reformat_core::{FileStyle, LineEnding};
 
 static WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Files whose `.editorconfig` could not be read since the last
+/// [`take_errors`]. They are left unchanged, and must still fail the run.
+static ERRORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Returns and clears the per-file errors recorded by [`style_of`].
+pub fn take_errors() -> Vec<String> {
+    std::mem::take(&mut *ERRORS.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 /// The style `.editorconfig` declares for `path`.
 ///
@@ -14,9 +24,20 @@ static WARNED: AtomicBool = AtomicBool::new(false);
 /// under `[*]` would otherwise rewrite the tabs a `Makefile` requires.
 /// `insert_final_newline = false` is ignored rather than stripping newlines.
 pub fn style_of(path: &Path, indent: bool) -> FileStyle {
-    let mut props = match ec4rs::properties_of(path) {
+    // ec4rs finds the files from the absolute path but matches sections such
+    // as `[sub/*.c]` against the path as given, so a relative path missed them.
+    let resolved = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut props = match ec4rs::properties_of(&resolved) {
         Ok(props) => props,
         Err(e) => {
+            ERRORS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!(
+                    "{}: cannot read .editorconfig: {}",
+                    path.display(),
+                    e
+                ));
             if !WARNED.swap(true, Ordering::Relaxed) {
                 log::warn!(
                     "Could not read .editorconfig for '{}': {}",

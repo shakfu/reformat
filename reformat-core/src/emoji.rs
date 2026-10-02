@@ -19,23 +19,27 @@ const TASK_EMOJI_CHARS: &str = concat!(
 
 /// Base emoji code points.
 ///
-/// Card suits (U+2660-U+2667) and musical notes (U+2669-U+266F) are
-/// deliberately excluded. They sit inside the Miscellaneous Symbols block but
-/// are ordinary text characters, and the old blanket U+2600-U+26FF range
-/// deleted them silently: `cards <U+2660> <U+2665> end` became `cards   end`.
+/// In the Miscellaneous Symbols and Dingbats blocks (U+2600-U+27BF) only
+/// characters with the Unicode `Emoji` property count. The rest are text:
+/// chess pieces, stars, arrows, circled digits. Card suits (U+2660-U+2667),
+/// musical notes (U+2669-U+266F), the gender signs (U+2640, U+2642) and the
+/// chess pawn (U+265F) have the property but are ordinary text symbols, so
+/// they are excluded too. Inside a ZWJ sequence they are still removed.
 const EMOJI_BASE: &str = concat!(
     r"[\x{1F300}-\x{1F5FF}\x{1F600}-\x{1F64F}\x{1F680}-\x{1F6FF}",
     r"\x{1F900}-\x{1F9FF}\x{1FA00}-\x{1FAFF}",
     r"\x{1F004}\x{1F0CF}\x{1F18E}\x{1F191}-\x{1F19A}\x{1F1E0}-\x{1F1FF}",
-    r"\x{2600}-\x{265F}\x{2668}\x{2670}-\x{26FF}\x{2700}-\x{27BF}]",
+    r"[[\x{2600}-\x{263F}\x{2641}\x{2643}-\x{265E}\x{2668}\x{2670}-\x{26FF}\x{2700}-\x{27BF}]",
+    r"&&\p{Emoji}]]",
 );
 
 /// Variation selectors, which choose text or emoji presentation.
 const VARIATION_SELECTORS: &str = r"[\x{FE00}-\x{FE0F}]";
 
-/// Modifiers that attach to a base emoji: presentation selectors and skin
-/// tones. Never meaningful on their own.
-const EMOJI_MODIFIERS: &str = r"[\x{FE00}-\x{FE0F}\x{1F3FB}-\x{1F3FF}]";
+/// Modifiers that attach to a base emoji: presentation selectors, skin
+/// tones, and the tag characters of subdivision flags. Never meaningful on
+/// their own.
+const EMOJI_MODIFIERS: &str = r"[\x{FE00}-\x{FE0F}\x{1F3FB}-\x{1F3FF}\x{E0020}-\x{E007F}]";
 
 /// Options for emoji transformation
 #[derive(Debug, Clone)]
@@ -102,10 +106,16 @@ impl EmojiTransformer {
         };
         let general_emoji_pattern = Regex::new(&format!(
             concat!(
-                // Keycap sequences first, so the digit is consumed with its mark.
-                r"(?:[0-9\#\*]{vs}?\x{{20E3}})",
+                // A joiner or keycap mark after a letter or mark is text: a
+                // Devanagari conjunct is consonant + virama + U+200D + consonant.
+                // Matched first so the joiner is kept, not removed below.
+                r"(?P<keep>[\p{{L}}\p{{M}}][\x{{200D}}\x{{20E3}}]+)",
+                // Keycap sequences, so the digit is consumed with its mark.
+                r"|(?:[0-9\#\*]{vs}?\x{{20E3}})",
                 // An emoji, its modifiers, and any ZWJ-joined continuation.
-                r"|(?:{base}{mods}*(?:\x{{200D}}{base}{mods}*)*)",
+                // A continuation may be any pictograph, such as U+2B1B in the
+                // black cat sequence, so no piece of the sequence is left.
+                r"|(?:{base}{mods}*(?:\x{{200D}}(?:{base}|\p{{Extended_Pictographic}}){mods}*)*)",
                 // Joiners and keycap marks orphaned by earlier versions.
                 r"|\x{{200D}}|\x{{20E3}}",
             ),
@@ -210,12 +220,19 @@ impl ContentStep for EmojiTransformer {
         }
 
         if self.options.remove_other_emojis {
-            let found = self.general_emoji_pattern.find_iter(&modified).count();
+            let mut found = 0;
+            let result =
+                self.general_emoji_pattern
+                    .replace_all(&modified, |caps: &regex::Captures| {
+                        if caps.name("keep").is_some() {
+                            caps[0].to_string()
+                        } else {
+                            found += 1;
+                            String::new()
+                        }
+                    });
             if found > 0 {
-                modified = self
-                    .general_emoji_pattern
-                    .replace_all(&modified, "")
-                    .into_owned();
+                modified = result.into_owned();
                 changes += found;
             }
         }
@@ -316,6 +333,48 @@ mod tests {
             "play \u{26BD} fly \u{2708} end\n",
         );
         assert_eq!(out, "play  fly  end\n");
+    }
+
+    /// Text symbols in the emoji blocks are kept: chess pieces, stars, gender
+    /// signs, arrows and circled digits.
+    #[test]
+    fn test_text_symbols_in_dingbats_are_kept() {
+        let text = "\u{2658}f3 \u{265F} \u{2605}\u{2606} \u{2640}\u{2642} \u{2794} \u{2776}\n";
+        assert_eq!(transform("text_symbols_in_dingbats_are_kept", text), text);
+    }
+
+    /// Sequences are removed whole, including non-base continuations and tags.
+    #[test]
+    fn test_sequences_leave_no_pieces() {
+        // black cat, England flag, woman running
+        let text = concat!(
+            "a \u{1F408}\u{200D}\u{2B1B} b ",
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F} c ",
+            "\u{1F3C3}\u{200D}\u{2640}\u{FE0F} d\n"
+        );
+        assert_eq!(transform("sequences_leave_no_pieces", text), "a  b  c  d\n");
+    }
+
+    /// With task emojis kept, a sequence ending in one is still removed whole.
+    #[test]
+    fn test_sequence_ending_in_task_emoji_is_removed_whole() {
+        let t = EmojiTransformer::new(EmojiOptions {
+            replace_task_emojis: false,
+            ..Default::default()
+        });
+        let file = FileTarget::file(Path::new("a.md"));
+        let (out, _) = t
+            .transform("x \u{1F9D1}\u{200D}\u{2B50} y \u{2B50}\n", &file)
+            .unwrap();
+        assert_eq!(out, "x  y \u{2B50}\n");
+    }
+
+    /// A joiner inside a word is text, not emoji debris.
+    #[test]
+    fn test_joiner_in_indic_text_is_kept() {
+        // Devanagari ka + virama + ZWJ + ssa
+        let text = "word \u{0915}\u{094D}\u{200D}\u{0937} end\n";
+        assert_eq!(transform("joiner_in_indic_text_is_kept", text), text);
     }
 
     /// Debris left in files by earlier versions is cleaned up on a later run.

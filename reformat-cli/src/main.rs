@@ -530,7 +530,8 @@ enum Commands {
         #[arg(short = 'f', long = "find", required = true)]
         find: Vec<String>,
 
-        /// Replacement for the matching --find (capture groups $1, $2 unless --literal)
+        /// Replacement for the matching --find. Capture groups are $1, $2, or ${1}
+        /// before a letter, digit or _. --literal inserts it as plain text
         #[arg(long = "replace-with", required = true)]
         replace_with: Vec<String>,
 
@@ -603,6 +604,10 @@ enum Commands {
         /// Show the fixes without applying them
         #[arg(short = 'd', long = "dry-run")]
         dry_run: bool,
+
+        /// Modify files even if they have uncommitted changes in git
+        #[arg(long = "allow-dirty")]
+        allow_dirty: bool,
     },
 }
 
@@ -874,7 +879,11 @@ fn print_diff(path: &Path, before: &[u8], after: &[u8]) -> io::Result<()> {
     let before = String::from_utf8_lossy(before).replace('\r', "\\r");
     let after = String::from_utf8_lossy(after).replace('\r', "\\r");
     let name = path.display().to_string();
-    let diff = similar::TextDiff::from_lines(before.as_str(), after.as_str());
+    // Myers diff is quadratic when most lines change; past the deadline,
+    // similar returns a correct but less minimal diff.
+    let diff = similar::TextDiff::configure()
+        .timeout(std::time::Duration::from_secs(1))
+        .diff_lines(before.as_str(), after.as_str());
     let text = diff
         .unified_diff()
         .header(&format!("a/{}", name), &format!("b/{}", name))
@@ -901,7 +910,7 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
             .iter()
             .any(|step| NEEDS_CLEAN_TREE.contains(&step.as_str()))
     {
-        dirty::ensure_clean(label, inv.paths, inv.allow_dirty)?;
+        dirty::ensure_clean(label, inv.paths, inv.select.no_ignore, inv.allow_dirty)?;
     }
 
     let mut preset = preset.clone();
@@ -936,6 +945,7 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
             .map(|f| (f.target.path, f.is_symlink))
             .collect();
             let stats = FileRenamer::new(options).rename_paths(files);
+            exec.errors.extend(stats.errors.iter().cloned());
             exec.outcomes
                 .push((step.to_string(), StepOutcome::Renamed(stats)));
             i += 1;
@@ -952,6 +962,7 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
             };
             let cfg = preset.group.clone().unwrap_or_default();
             let result = FileGrouper::new(cfg.to_options(dry_run)?).process_with_changes(path)?;
+            exec.errors.extend(result.stats.errors.iter().cloned());
             if !dry_run && !result.changes.is_empty() {
                 let changes_path = resolve_record_path(None, "changes.json")?;
                 result.changes.write_to_file(&changes_path)?;
@@ -1001,6 +1012,7 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
             ));
         }
         exec.errors.extend(report.errors);
+        exec.errors.extend(editorconfig::take_errors());
         i = end;
     }
 
@@ -1411,15 +1423,23 @@ fn run_group(
     if !dry_run {
         let mut touched = vec![path.clone()];
         touched.extend(scope.clone());
-        dirty::ensure_clean("group", &touched, allow_dirty)?;
+        dirty::ensure_clean("group", &touched, false, allow_dirty)?;
     }
     let result = grouper.process_with_changes(&path)?;
+    // Failed moves were logged as they happened; they still fail the run.
+    let failed = result.stats.errors.len();
+    let done = |check_failed: bool| -> anyhow::Result<bool> {
+        if failed > 0 {
+            anyhow::bail!("{} group(s) or file(s) could not be moved", failed);
+        }
+        Ok(check_failed)
+    };
 
     let stats = &result.stats;
 
     if stats.files_moved == 0 {
         info!("No files needed grouping");
-        return Ok(false);
+        return done(false);
     }
 
     let prefix_str = if dry_run { "[DRY-RUN] " } else { "" };
@@ -1439,10 +1459,10 @@ fn run_group(
     // not happen would mislead the reference fixer.
     if dry_run {
         info!("[DRY-RUN] No changes file written.");
-        return Ok(false);
+        return done(false);
     }
     if result.changes.is_empty() {
-        return Ok(false);
+        return done(false);
     }
 
     let changes_path = resolve_record_path(changes_file, "changes.json")?;
@@ -1452,7 +1472,7 @@ fn run_group(
     let dirs_to_scan = if !no_interactive {
         info!("");
         if !prompt_yes_no("Would you like to scan for broken references?") {
-            return Ok(false);
+            return done(false);
         }
         match scope {
             Some(dir) => vec![dir],
@@ -1461,7 +1481,7 @@ fn run_group(
     } else if let Some(dir) = scope {
         vec![dir]
     } else {
-        return Ok(false);
+        return done(false);
     };
 
     for scan_dir in &dirs_to_scan {
@@ -1470,8 +1490,12 @@ fn run_group(
         }
     }
 
+    let stale_fixes = fixes_file
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("fixes.json"));
     let scan_options = ScanOptions {
         verbose: verbose_scan,
+        skip_files: vec![changes_path.clone(), stale_fixes],
         ..Default::default()
     };
     debug!("Scanning for broken references...");
@@ -1480,7 +1504,7 @@ fn run_group(
 
     if fix_record.is_empty() {
         info!("\nNo broken references found.");
-        return Ok(false);
+        return done(false);
     }
 
     let fixes_path = resolve_record_path(fixes_file, "fixes.json")?;
@@ -1493,7 +1517,7 @@ fn run_group(
             "Review it, then apply with: reformat apply_fixes {}",
             fixes_path.display()
         );
-        return Ok(false);
+        return done(false);
     }
 
     info!("\nProposed fixes:");
@@ -1525,7 +1549,7 @@ fn run_group(
             .collect();
         to_edit.sort();
         to_edit.dedup();
-        dirty::ensure_clean("group", &to_edit, allow_dirty).map_err(|e| {
+        dirty::ensure_clean("group", &to_edit, false, allow_dirty).map_err(|e| {
             anyhow::anyhow!(
                 "{}\nThe grouping is done; apply the fixes later with: reformat apply_fixes {}",
                 e,
@@ -1545,11 +1569,11 @@ fn run_group(
         );
     }
 
-    Ok(false)
+    done(false)
 }
 
 #[time("debug")]
-fn run_apply_fixes(fixes_file: &Path, dry_run: bool) -> anyhow::Result<bool> {
+fn run_apply_fixes(fixes_file: &Path, dry_run: bool, allow_dirty: bool) -> anyhow::Result<bool> {
     let record = FixRecord::read_from_file(fixes_file)
         .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", fixes_file.display(), e))?;
 
@@ -1565,6 +1589,15 @@ fn run_apply_fixes(fixes_file: &Path, dry_run: bool) -> anyhow::Result<bool> {
         info!("[DRY-RUN] {} fix(es) would be applied", record.len());
         return Ok(false);
     }
+
+    let mut files: Vec<PathBuf> = record
+        .fixes
+        .iter()
+        .map(|f| PathBuf::from(&f.file))
+        .collect();
+    files.sort();
+    files.dedup();
+    dirty::ensure_clean("apply_fixes", &files, false, allow_dirty)?;
 
     let result = ReferenceFixer::apply_fixes(&record)?;
     report_applied(&result);
@@ -1636,6 +1669,9 @@ fn run_stdin(label: &str, preset: &Preset, name: &Path, inv: &Invocation) -> any
         }
     } else if !(inv.flags.check || inv.flags.dry_run) {
         write_stdout(&output)?;
+    }
+    if let Some(first) = editorconfig::take_errors().first() {
+        anyhow::bail!("{}", first);
     }
     Ok(inv.flags.check && changed)
 }
@@ -2057,7 +2093,8 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
         Commands::ApplyFixes {
             fixes_file,
             dry_run,
-        } => run_apply_fixes(&fixes_file, dry_run),
+            allow_dirty,
+        } => run_apply_fixes(&fixes_file, dry_run, allow_dirty),
 
         Commands::Presets => run_list_presets(cli.config.as_deref()),
 
@@ -2099,15 +2136,20 @@ fn main() -> ExitCode {
     }
     debug!("CLI arguments parsed successfully");
 
+    let check = match &cli.command {
+        None => cli.run.check,
+        Some(command) => command.common().is_some_and(|c| c.run.check),
+    };
     match run(cli) {
         Ok(false) => ExitCode::SUCCESS,
         Ok(true) => ExitCode::from(1),
-        // A reader such as `head` closed stdout early; stop quietly.
+        // A reader such as `head` closed stdout early; stop quietly. Under
+        // `--check` the output was a diff, so a file would change.
         Err(e)
             if e.downcast_ref::<io::Error>()
                 .is_some_and(|io| io.kind() == io::ErrorKind::BrokenPipe) =>
         {
-            ExitCode::SUCCESS
+            ExitCode::from(u8::from(check))
         }
         Err(e) => {
             eprintln!("Error: {:?}", e);

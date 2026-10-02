@@ -134,15 +134,12 @@ impl CombinedProcessor {
         let mut current_path = path.to_path_buf();
 
         if let Some(ref renamer) = self.renamer {
+            // Taken from the renamer, which keeps the extension's case.
+            let target = renamer.target_path(path)?;
             if renamer.rename_file(path, false)? {
                 stats.files_renamed += 1;
-                if !self.options.dry_run {
-                    let lowercase = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?
-                        .to_lowercase();
-                    current_path = path.with_file_name(lowercase);
+                if let (false, Some(target)) = (self.options.dry_run, target) {
+                    current_path = target;
                 }
             }
         }
@@ -339,6 +336,23 @@ mod tests {
         assert_eq!(
             fs::read_to_string(tmp.path().join("README.md")).unwrap(),
             "Title\n"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_keeps_extension_case() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("Foo.TXT"), "x  \n").unwrap();
+        let processor = CombinedProcessor::new(CombinedOptions {
+            lowercase_filenames: true,
+            ..Default::default()
+        });
+        let stats = processor.process(tmp.path()).unwrap();
+        assert_eq!(stats.files_renamed, 1);
+        assert_eq!(stats.whitespace_lines_cleaned, 1);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("foo.TXT")).unwrap(),
+            "x\n"
         );
     }
 }

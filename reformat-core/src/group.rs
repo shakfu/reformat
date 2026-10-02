@@ -46,6 +46,9 @@ pub struct GroupStats {
     pub files_moved: usize,
     /// Number of files renamed (prefix stripped)
     pub files_renamed: usize,
+    /// One message per group or file that could not be moved. The run
+    /// continues, so the change record covers every move that happened.
+    pub errors: Vec<String>,
 }
 
 /// Result of a grouping operation including change tracking
@@ -138,8 +141,9 @@ impl FileGrouper {
             let entry = entry?;
             let path = entry.path();
 
-            // Only process files, not directories
-            if !path.is_file() {
+            // Regular files only. A moved relative symlink would dangle, and
+            // `is_file` follows links, so the entry's own type is checked.
+            if !entry.file_type()?.is_file() {
                 continue;
             }
 
@@ -186,18 +190,35 @@ impl FileGrouper {
             // Create subdirectory path
             let subdir = dir.join(&prefix);
 
-            // Create directory if it doesn't exist
-            if !subdir.exists() {
-                if self.options.dry_run {
-                    log::info!("Would create directory: {}", subdir.display());
-                } else {
-                    fs::create_dir(&subdir)?;
-                    log::info!("Created directory: {}", subdir.display());
+            // A file or symlink with the prefix's name cannot hold the group.
+            match fs::symlink_metadata(&subdir) {
+                Ok(meta) if !meta.is_dir() => {
+                    let message = format!(
+                        "{}: exists and is not a directory, skipping {} file(s)",
+                        subdir.display(),
+                        files.len()
+                    );
+                    log::warn!("{}", message);
+                    stats.errors.push(message);
+                    continue;
                 }
-                // Record the directory creation (relative to base_dir)
-                let rel_path = subdir.strip_prefix(base_dir).unwrap_or(&subdir);
-                changes.add_directory_created(rel_path);
-                stats.dirs_created += 1;
+                Ok(_) => {}
+                Err(_) => {
+                    if self.options.dry_run {
+                        log::info!("Would create directory: {}", subdir.display());
+                    } else if let Err(e) = fs::create_dir(&subdir) {
+                        let message = format!("{}: {}", subdir.display(), e);
+                        log::warn!("{}", message);
+                        stats.errors.push(message);
+                        continue;
+                    } else {
+                        log::info!("Created directory: {}", subdir.display());
+                    }
+                    // Record the directory creation (relative to base_dir)
+                    let rel_path = subdir.strip_prefix(base_dir).unwrap_or(&subdir);
+                    changes.add_directory_created(rel_path);
+                    stats.dirs_created += 1;
+                }
             }
 
             // Move each file to the subdirectory
@@ -245,7 +266,13 @@ impl FileGrouper {
                         );
                     }
                 } else {
-                    fs::rename(&file_path, &new_path)?;
+                    if let Err(e) = fs::rename(&file_path, &new_path) {
+                        let message =
+                            format!("{} -> {}: {}", file_path.display(), new_path.display(), e);
+                        log::warn!("{}", message);
+                        stats.errors.push(message);
+                        continue;
+                    }
                     if self.options.strip_prefix && new_filename != filename {
                         log::info!(
                             "Moved and renamed '{}' -> '{}'",
@@ -308,22 +335,20 @@ impl FileGrouper {
                 .then_with(|| a.cmp(b))
         });
 
-        // Process the target directory
-        let stats = self.process_directory_single(&path, &path, &mut changes)?;
-        total_stats.dirs_created += stats.dirs_created;
-        total_stats.files_moved += stats.files_moved;
-        total_stats.files_renamed += stats.files_renamed;
-
-        // Process pre-existing subdirectories (not newly created ones)
-        for subdir_path in subdirs_to_process {
+        // Subdirectories first, then the target: grouping the target first
+        // moved files into a pre-existing subdirectory, which was then grouped
+        // again, and the dry run could not predict it.
+        subdirs_to_process.push(path.clone());
+        for dir in subdirs_to_process {
             // Skip if the directory was removed or doesn't exist anymore
-            if !subdir_path.is_dir() {
+            if !dir.is_dir() {
                 continue;
             }
-            let stats = self.process_directory_single(&subdir_path, &path, &mut changes)?;
+            let stats = self.process_directory_single(&dir, &path, &mut changes)?;
             total_stats.dirs_created += stats.dirs_created;
             total_stats.files_moved += stats.files_moved;
             total_stats.files_renamed += stats.files_renamed;
+            total_stats.errors.extend(stats.errors);
         }
 
         Ok(GroupResult {
@@ -823,5 +848,69 @@ mod tests {
         assert!(sub_dir.join("sub").join("sub_create.tmpl").exists());
 
         let _ = fs::remove_dir_all(&test_dir);
+    }
+
+    /// A file named like the prefix skips that group; the other groups still
+    /// move, and the change record covers them.
+    #[test]
+    fn test_prefix_named_by_a_file_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        for name in ["aaa_1", "aaa_2", "bbb", "bbb_1", "bbb_2"] {
+            fs::write(dir.join(name), "x").unwrap();
+        }
+        let grouper = FileGrouper::new(GroupOptions::default());
+        let result = grouper.process_with_changes(dir).unwrap();
+
+        assert_eq!(result.stats.files_moved, 2);
+        assert_eq!(result.stats.errors.len(), 1);
+        assert_eq!(result.changes.changes.len(), 3);
+        assert!(dir.join("aaa/aaa_1").exists());
+        assert!(dir.join("bbb_1").exists());
+    }
+
+    /// Files merged into a pre-existing directory are not grouped again, and
+    /// the dry run predicts the real run.
+    #[test]
+    fn test_recursive_group_moves_each_file_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::create_dir(dir.join("foo")).unwrap();
+        fs::write(dir.join("foo/keep.txt"), "x").unwrap();
+        fs::write(dir.join("foo_1.txt"), "x").unwrap();
+        fs::write(dir.join("foo_2.txt"), "x").unwrap();
+
+        let run = |dry_run| {
+            FileGrouper::new(GroupOptions {
+                recursive: true,
+                dry_run,
+                ..Default::default()
+            })
+            .process_with_changes(dir)
+            .unwrap()
+            .stats
+            .files_moved
+        };
+        assert_eq!(run(true), 2);
+        assert_eq!(run(false), 2);
+        assert!(dir.join("foo/foo_1.txt").exists());
+        assert!(!dir.join("foo/foo").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinks_are_not_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(dir.join("target.txt"), "x").unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.join("s_1")).unwrap();
+        std::os::unix::fs::symlink("target.txt", dir.join("s_2")).unwrap();
+
+        let stats = FileGrouper::new(GroupOptions::default())
+            .process(dir)
+            .unwrap();
+
+        assert_eq!(stats.files_moved, 0);
+        assert!(dir.join("s_1").exists());
     }
 }

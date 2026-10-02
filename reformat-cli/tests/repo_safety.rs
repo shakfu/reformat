@@ -451,3 +451,128 @@ fn test_interactive_group_refuses_to_fix_uncommitted_files() {
         }
     }
 }
+
+/// `.git` reached through `.` or a named symlink is still `.git`.
+#[cfg(unix)]
+#[test]
+fn test_git_dir_reached_indirectly_is_never_modified() {
+    let tmp = tempfile::tempdir().unwrap();
+    let git_dir = tmp.path().join(".git");
+    std::fs::create_dir(&git_dir).unwrap();
+    std::fs::write(git_dir.join("description"), "text  \n").unwrap();
+    std::os::unix::fs::symlink(".git/description", tmp.path().join("desc.txt")).unwrap();
+
+    run(tmp.path(), &["clean", "desc.txt"]);
+    run(&git_dir, &["clean", "--include", "*", "."]);
+    run(&git_dir, &["rename_files", "--to-uppercase", "."]);
+
+    assert_eq!(
+        std::fs::read_to_string(git_dir.join("description")).unwrap(),
+        "text  \n"
+    );
+}
+
+/// Git cannot restore an ignored file, so a destructive run that reaches one
+/// is refused: when it is named, or when `--no-ignore` walks to it.
+#[test]
+fn test_ignored_files_count_as_uncommitted() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::write(dir.join(".git/info/exclude"), "secret.txt\n").unwrap();
+    std::fs::write(dir.join("secret.txt"), "foo\n").unwrap();
+
+    let replace = ["replace", "-f", "foo", "--replace-with", "bar"];
+    let named = run(
+        dir,
+        &[&replace[..], &["--include", "*.txt", "secret.txt"]].concat(),
+    );
+    let walked = run(
+        dir,
+        &[&replace[..], &["--no-ignore", "--include", "*.txt", "."]].concat(),
+    );
+    assert_eq!(named.status.code(), Some(2));
+    assert_eq!(walked.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("secret.txt")).unwrap(),
+        "foo\n"
+    );
+
+    // A default walk skips the ignored file, so it is not refused.
+    let out = run(dir, &["replace", "-f", "Title", "--replace-with", "T", "."]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A git failure other than "not a repository" means the tree was not
+/// checked, so the run is refused.
+#[test]
+fn test_git_failure_refuses_destructive_run() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    let bad = dir.join("bad.gitconfig");
+    std::fs::write(&bad, "[core\n").unwrap();
+
+    let out = Command::new(binary())
+        .args(["replace", "-f", "Title", "--replace-with", "T", "README.md"])
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", &bad)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot check"));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("README.md")).unwrap(),
+        "Title  \ntext  \n"
+    );
+}
+
+/// `apply_fixes` edits the referencing files, so it is guarded like `group`.
+#[test]
+fn test_apply_fixes_refuses_uncommitted_changes() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::create_dir_all(dir.join("t")).unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("t/wbs_a.tmpl"), "x").unwrap();
+    std::fs::write(dir.join("t/wbs_b.tmpl"), "x").unwrap();
+    std::fs::write(dir.join("src/main.go"), "load(\"wbs_a.tmpl\")\n").unwrap();
+    let grouped = run(
+        dir,
+        &[
+            "group",
+            "--no-interactive",
+            "--allow-dirty",
+            "--scope",
+            "src",
+            "t",
+        ],
+    );
+    assert!(grouped.status.success(), "{:?}", grouped);
+
+    let refused = run(dir, &["apply_fixes", "fixes.json"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/main.go")).unwrap(),
+        "load(\"wbs_a.tmpl\")\n"
+    );
+    let applied = run(dir, &["apply_fixes", "--allow-dirty", "fixes.json"]);
+    assert!(applied.status.success(), "{:?}", applied);
+}

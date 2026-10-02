@@ -1,6 +1,6 @@
 //! Regex find-and-replace transformer
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use std::path::Path;
 
 use crate::step::{ContentStep, FileTarget};
@@ -65,8 +65,12 @@ impl ContentReplacer {
     pub fn new(options: ReplaceOptions) -> crate::Result<Self> {
         let mut compiled = Vec::with_capacity(options.patterns.len());
         for pattern in &options.patterns {
-            let regex = Regex::new(&pattern.find)
+            // CRLF mode stops `.` at `\r`, so `x = .*` keeps a CRLF terminator.
+            let regex = RegexBuilder::new(&pattern.find)
+                .crlf(true)
+                .build()
                 .map_err(|e| anyhow::anyhow!("invalid regex pattern '{}': {}", pattern.find, e))?;
+            check_group_refs(&regex, &pattern.find, &pattern.replace)?;
             compiled.push(CompiledPattern {
                 regex,
                 replace: pattern.replace.clone(),
@@ -87,6 +91,51 @@ impl ContentReplacer {
     pub fn process(&self, path: &Path) -> crate::Result<(usize, usize)> {
         crate::step::process_path(self, path, self.options.recursive, self.options.dry_run)
     }
+}
+
+/// Fails if `replace` refers to a capture group that `regex` lacks.
+///
+/// The regex crate expands such a reference to the empty string. `$1_new`
+/// names a group `1_new`, so it silently deleted the match.
+fn check_group_refs(regex: &Regex, find: &str, replace: &str) -> crate::Result<()> {
+    let bytes = replace.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let rest = &replace[i + 1..];
+        let (name, len) = if rest.starts_with('$') {
+            ("", 1)
+        } else if let Some(braced) = rest.strip_prefix('{') {
+            match braced.find('}') {
+                Some(end) => (&braced[..end], end + 2),
+                None => ("", 0),
+            }
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            (&rest[..end], end)
+        };
+        let defined = match name.parse::<usize>() {
+            Ok(index) => index < regex.captures_len(),
+            Err(_) => name.is_empty() || regex.capture_names().any(|n| n == Some(name)),
+        };
+        if !defined {
+            anyhow::bail!(
+                "replacement '{}' refers to group '{}', which pattern '{}' does not define \
+                 (write ${{1}} to follow a group number with a letter, digit or '_', \
+                 or $$ for a literal $)",
+                replace,
+                name,
+                find
+            );
+        }
+        i += 1 + len;
+    }
+    Ok(())
 }
 
 impl ContentStep for ContentReplacer {
@@ -370,5 +419,34 @@ mod tests {
 
         let content = fs::read_to_string(&file).unwrap();
         assert_eq!(content, "call(b, a)\ncall(y, x)\n");
+    }
+
+    fn replacer(find: &str, replace: &str) -> crate::Result<ContentReplacer> {
+        ContentReplacer::new(ReplaceOptions {
+            patterns: vec![ReplacePattern {
+                find: find.to_string(),
+                replace: replace.to_string(),
+            }],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn test_dot_does_not_consume_cr() {
+        let r = replacer("x = .*", "x = 1").unwrap();
+        let file = FileTarget::file(Path::new("a.py"));
+        let (out, _) = r.transform("x = 0\r\ny = 2\r\n", &file).unwrap();
+        assert_eq!(out, "x = 1\r\ny = 2\r\n");
+        let (out, _) = r.transform("x = 0\ry = 2\r", &file).unwrap();
+        assert_eq!(out, "x = 1\ry = 2\r");
+    }
+
+    #[test]
+    fn test_unknown_group_reference_is_rejected() {
+        assert!(replacer(r"(\w+)\.old", "$1_new").is_err());
+        assert!(replacer(r"(\w+)", "$2").is_err());
+        assert!(replacer(r"(\w+)", "${nope}").is_err());
+        assert!(replacer(r"(\w+)\.old", "${1}_new").is_ok());
+        assert!(replacer(r"(?P<n>\w+)", "$n $0 $$5 $ {").is_ok());
     }
 }

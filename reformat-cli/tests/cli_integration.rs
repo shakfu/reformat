@@ -1963,3 +1963,22 @@ fn test_cli_replace_prefix_halves_are_required_together() {
         "IUserService = 1\n"
     );
 }
+
+/// A rename that cannot be made fails the run, in a dry run and a real one.
+#[test]
+fn test_rename_collision_exits_2() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("a b.txt"), "x").unwrap();
+    fs::write(tmp.path().join("a-b.txt"), "y").unwrap();
+
+    for extra in [&["-d"][..], &[]] {
+        let output = Command::new(get_binary_path())
+            .args(["rename_files", "--underscored", "--allow-dirty"])
+            .args(extra)
+            .arg(tmp.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{:?}", extra);
+    }
+    assert!(tmp.path().join("a_b.txt").exists());
+}

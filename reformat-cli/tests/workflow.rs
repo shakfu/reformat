@@ -372,9 +372,17 @@ fn test_pre_commit_hook_entries() {
         (".pre-commit-config.yaml", "repos: []  \r\n"),
         ("notes.md", "done \u{2705}\n"),
         ("c.txt", "z"),
+        // Parsed as --dry-run unless the entry ends in `--`.
+        ("-d", "x  "),
     ]);
     let dir = tmp.path();
-    let files = ["Makefile", ".pre-commit-config.yaml", "notes.md", "c.txt"];
+    let files = [
+        "Makefile",
+        ".pre-commit-config.yaml",
+        "notes.md",
+        "c.txt",
+        "-d",
+    ];
 
     for entry in &entries {
         let mut args: Vec<&str> = entry.split_whitespace().collect();
@@ -388,6 +396,7 @@ fn test_pre_commit_hook_entries() {
     assert_eq!(read(dir, ".pre-commit-config.yaml"), "repos: []\n");
     assert_eq!(read(dir, "notes.md"), "done [x]\n");
     assert_eq!(read(dir, "c.txt"), "z\n");
+    assert_eq!(read(dir, "-d"), "x\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -733,4 +742,54 @@ fn test_man_page_to_stdout_and_directory() {
     for page in ["reformat.1", "reformat-clean.1", "reformat-replace.1"] {
         assert!(dir.join("pages").join(page).exists(), "{} missing", page);
     }
+}
+
+/// A section with a `/` applies whichever directory the path is given from.
+#[test]
+fn test_editorconfig_path_sections_match_relative_paths() {
+    let tmp = fixture(&[
+        (
+            ".editorconfig",
+            "root = true\n\n[sub/*.txt]\ntrim_trailing_whitespace = true\n",
+        ),
+        ("sub/x.txt", "a  \n"),
+    ]);
+    let sub = tmp.path().join("sub");
+    let check = run(&sub, &["editorconfig", "--check", "x.txt"]);
+    assert_eq!(check.status.code(), Some(1), "{:?}", check);
+    let stdin = run_stdin(
+        &sub,
+        &["editorconfig", "--stdin-filename", "x.txt"],
+        b"a  \n",
+    );
+    assert_eq!(stdout(&stdin), "a\n");
+}
+
+/// An unreadable `.editorconfig` fails the run instead of passing `--check`.
+#[test]
+fn test_malformed_editorconfig_fails_check() {
+    let tmp = fixture(&[
+        (".editorconfig", "root = true\n[*]\ngarbage\n"),
+        ("x.txt", "a  \n"),
+    ]);
+    let check = run(tmp.path(), &["editorconfig", "--check", "."]);
+    assert_eq!(check.status.code(), Some(2), "{:?}", check);
+}
+
+/// A reader that closes the pipe early, as `head` does, does not turn a
+/// failed `--check` into success.
+#[test]
+fn test_check_diff_into_closed_pipe_exits_1() {
+    // Larger than a pipe buffer, so the write fails once the reader is gone.
+    let line = format!("{}  \n", "x".repeat(10_000));
+    let tmp = fixture(&[("a.txt", &line.repeat(20))]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_reformat"))
+        .args(["clean", "--check", "--diff", "."])
+        .current_dir(tmp.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    assert_eq!(child.wait().unwrap().code(), Some(1));
 }

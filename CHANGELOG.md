@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release breaks the library API. See Changed.
+
+### Changed
+
+- Library: `GroupStats` has an `errors` field and `ScanOptions` has a
+  `skip_files` field. Struct literals without `..Default::default()` no
+  longer compile.
+- The dirty-tree guard also refuses gitignored files that the run would
+  modify: a file named directly, or any file under `--no-ignore`. Git cannot
+  restore them.
+- The guard refuses the run when git fails for a reason other than "not a
+  git repository", such as a malformed config. It previously treated every
+  git failure as a clean tree.
+- `replace` rejects a replacement that refers to an undefined group. `$1_new`
+  names the group `1_new`, so it expanded to nothing and deleted the match.
+  Write `${1}_new`.
+- `group` skips a prefix whose name is taken by a file, and continues after a
+  failed move. Both fail the run with status 2. It previously aborted
+  partway, with files already moved and no `changes.json` written.
+- A bare file name in a reference is now replaced by the new path relative
+  to the file's old directory: `x_1.txt` in `a/` becomes `x/x_1.txt`, not
+  `a/x/x_1.txt`. The old form was relative to the grouped directory, which is
+  wrong for any reference resolved from the referencing file.
+- `apply_fixes` refuses files with uncommitted changes, and takes
+  `--allow-dirty`. The same fixes were already guarded at `group`'s prompt.
+- `emojis` removes characters in U+2600-U+27BF only if they have the Unicode
+  `Emoji` property. Chess pieces, stars, arrows and circled digits were
+  removed. The gender signs and the chess pawn are also kept, as card suits
+  already were.
+- The pre-commit hook entries end in `--`, so a staged file named `-d` is a
+  path, not `--dry-run`.
+- `group` and the library walks process names that are not UTF-8 instead of
+  skipping them silently. `rename_files` reports such a name as an error.
+
+### Fixed
+
+- `rename_files --include-symlinks` renamed a symlink over its own target,
+  destroying the file. The case-only rename check followed symlinks, so a
+  link and its target looked like one file.
+- `.git` could be modified through a named symlink into it, or from a path
+  given with `.` or `..` inside it. The check now also tests the resolved
+  path.
+- `rename_files` exited 0 when a file could not be renamed. A dry run did not
+  report two files that map to one name.
+- `replace` changed CRLF to LF on lines that `.*` matched, because `.`
+  matched `\r`.
+- `group -r` moved files twice when the target directory already held a
+  directory named after a prefix. The dry run did not show this.
+- `group`'s reference scan rewrote `changes.json` and a stale `fixes.json`.
+  When two moved files shared a name, every bare reference to that name was
+  pointed at the last one. A bare name whose moves differ relative to their
+  old directories is now left alone.
+- `emojis` deleted the zero-width joiner from Devanagari, Malayalam and other
+  scripts that use it inside words.
+- `.editorconfig` sections containing `/` did not apply to relative paths,
+  including the paths pre-commit passes. A malformed `.editorconfig` passed
+  `--check`; it now fails the run with status 2.
+- The temporary file in an atomic write was readable by other users until
+  the original permissions were copied. It is now created owner-only.
+- An atomic write failed with "file name too long" for names over about 235
+  bytes, because the temporary name adds a suffix.
+- A reference followed by a full stop, as at the end of a sentence, was not
+  found.
+- `group` moved symlinks, leaving relative ones dangling.
+- The reference scan dropped unreadable and non-UTF-8 files at debug level,
+  then reported "No broken references found". It now warns.
+- `emojis` left pieces of some sequences: U+2B1B from the black cat, and the
+  tag characters of subdivision flags such as England's.
+- `header` treated `# Copyright 2026 A` as the header of a line
+  `# Copyright 2019 AB Corp` and changed that year. The match must now cover
+  the whole line.
+- `header` appended the header at the end of a CR-only file that starts
+  with a shebang, and again on every run.
+- `IndentOptions { width: 0 }` panicked with a division by zero. Such a
+  normalizer now changes nothing.
+- `CombinedProcessor` with `lowercase_filenames` failed on `Foo.TXT`: it
+  looked for `foo.txt`, but the renamer keeps the extension's case.
+- `--check --diff` exited 0 when the reader closed the pipe early, as
+  `| head` does. It now exits 1.
+- `--diff` ran for minutes on a large file in which most lines change. The
+  diff now stops refining after one second.
+- The dirty-tree guard missed changes inside a submodule configured with
+  `ignore = dirty` or `all`.
+- The README's hook recipe split file names at spaces, and exited 2 with
+  nothing staged.
+
 ## [0.3.0] - 2026-10-01
 
 This release breaks the library API. See Changed.

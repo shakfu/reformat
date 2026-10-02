@@ -3,33 +3,35 @@
 # pre-commit runs `cargo install --path .`, and this repository's root is a
 # virtual workspace manifest.
 #
+# Each entry ends in `--`, so a file named like a flag (`-d`) is a path.
+#
 # Each hook rewrites files in place; pre-commit fails the commit when a file
 # changes, so the fix can be reviewed and staged.
 
 - id: reformat-clean
   name: reformat clean
   description: Strip trailing whitespace, add a missing final newline, and remove trailing blank lines.
-  entry: "reformat clean --final-newline --trim-blank-lines --hidden --include *"
+  entry: "reformat clean --final-newline --trim-blank-lines --hidden --include * --"
   language: system
   types: [text]
 
 - id: reformat-endings
   name: reformat endings
   description: Convert line endings to LF.
-  entry: "reformat endings --style lf --hidden --include *"
+  entry: "reformat endings --style lf --hidden --include * --"
   language: system
   types: [text]
 
 - id: reformat-editorconfig
   name: reformat editorconfig
   description: Apply trim_trailing_whitespace, insert_final_newline and end_of_line from .editorconfig.
-  entry: "reformat editorconfig --hidden"
+  entry: "reformat editorconfig --hidden --"
   language: system
   types: [text]
 
 - id: reformat-emojis
   name: reformat emojis
   description: Replace task emojis with text and remove other emojis.
-  entry: "reformat emojis --hidden"
+  entry: "reformat emojis --hidden --"
   language: system
   types: [text]

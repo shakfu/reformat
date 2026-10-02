@@ -120,7 +120,8 @@ These hold for every command. The tests that cover them are named in
 parentheses.
 
 - **`.git` is never modified.** `select` prunes it. The runner and the
-  renamer refuse any path with a `.git` component, whatever the flags
+  renamer refuse any path with a `.git` component, as written or resolved,
+  whatever the flags
   (`repo_safety.rs`, `test_runner_never_modifies_git_metadata`,
   `test_rename_paths_selection_and_git_refusal`).
 - **No truncated files.** `write_atomic` writes a temporary file in the same
@@ -135,8 +136,9 @@ parentheses.
 - **Binary files are skipped.** A NUL byte marks a file as binary. Files that
   are not UTF-8 are skipped by every step except `endings`.
 - **Destructive runs need a clean tree.** `rename`, `group`, `convert` and
-  `replace` refuse paths git reports as modified or untracked, unless
-  `--allow-dirty`. Fixes chosen at `group`'s interactive prompt are checked
+  `replace` refuse paths git reports as modified, untracked, or ignored
+  where the run reaches them, unless `--allow-dirty`. A git failure other
+  than "not a git repository" refuses the run. Fixes chosen at `group`'s interactive prompt are checked
   again before they are applied.
 
 ## Reference fixing

@@ -29,6 +29,16 @@ pub fn is_excluded_component<S: AsRef<str>>(name: &str, skip_dirs: &[S]) -> bool
     name.starts_with('.') || skip_dirs.iter().any(|d| d.as_ref() == name)
 }
 
+/// As [`is_excluded_component`], for a name that need not be UTF-8.
+///
+/// Compared as bytes, so a name that is not UTF-8 is processed rather than
+/// silently skipped. A `.` prefix or a skip name is ASCII, so the comparison
+/// does not depend on the rest of the encoding.
+pub fn is_excluded_name<S: AsRef<str>>(name: &std::ffi::OsStr, skip_dirs: &[S]) -> bool {
+    let name = name.as_encoded_bytes();
+    name.starts_with(b".") || skip_dirs.iter().any(|d| d.as_ref().as_bytes() == name)
+}
+
 /// Returns true if any *named* component of `path` is hidden or a skipped
 /// directory.
 ///
@@ -53,11 +63,18 @@ pub fn is_excluded<S: AsRef<str>>(path: &Path, skip_dirs: &[S]) -> bool {
     })
 }
 
-/// Returns true if any component of `path` is `.git`. Such paths are never
-/// modified, whatever the caller selected.
+/// Returns true if any component of `path` is `.git`, as written or after
+/// resolving symbolic links, `.` and `..`. Such paths are never modified,
+/// whatever the caller selected.
+///
+/// The resolved path matters for `reformat clean .` run inside `.git`, and for
+/// a named symlink into it.
 pub fn in_git_dir(path: &Path) -> bool {
-    path.components()
-        .any(|c| matches!(c, Component::Normal(name) if name == ".git"))
+    let has_git = |p: &Path| {
+        p.components()
+            .any(|c| matches!(c, Component::Normal(name) if name == ".git"))
+    };
+    has_git(path) || std::fs::canonicalize(path).is_ok_and(|p| has_git(&p))
 }
 
 /// Predicate for [`walkdir::IntoIter::filter_entry`], pruning excluded
@@ -68,21 +85,17 @@ pub fn in_git_dir(path: &Path) -> bool {
 /// and pruning it would make every walk empty. Per-file exclusion is still
 /// enforced by [`is_excluded`].
 pub fn include_entry<S: AsRef<str>>(entry: &DirEntry, skip_dirs: &[S]) -> bool {
+    let name = entry.file_name().as_encoded_bytes();
+    let skipped = skip_dirs.iter().any(|d| d.as_ref().as_bytes() == name);
     if entry.depth() == 0 {
         // The user named this directory explicitly, so being hidden is not
         // disqualifying -- a project may well live under `~/.config`, and
         // pruning the root would make every such walk silently empty. A root
         // that *is* a known metadata or build directory is still refused:
         // pointing the renamer at `.git` should not destroy the repository.
-        return match entry.file_name().to_str() {
-            Some(name) => !skip_dirs.iter().any(|d| d.as_ref() == name),
-            None => false,
-        };
+        return !skipped;
     }
-    match entry.file_name().to_str() {
-        Some(name) => !is_excluded_component(name, skip_dirs),
-        None => false, // non-UTF-8 names cannot be matched against patterns
-    }
+    !is_excluded_name(entry.file_name(), skip_dirs)
 }
 
 /// Iterator over the files under `root`, pruning hidden and build directories.
@@ -265,5 +278,17 @@ mod tests {
             !shallow.contains(&"a.rs".to_string()),
             "non-recursive walk descended"
         );
+    }
+
+    /// A name that is not UTF-8 is walked, not silently pruned.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_non_utf8_names_are_walked() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(std::ffi::OsStr::from_bytes(b"d\xff"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"f\xfe.txt")), "x").unwrap();
+        assert_eq!(walk_files(tmp.path(), true).count(), 1);
     }
 }
