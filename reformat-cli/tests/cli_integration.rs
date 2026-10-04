@@ -1662,6 +1662,25 @@ fn test_cli_group_refuses_existing_records_before_moving() {
 }
 
 #[test]
+fn test_cli_group_refuses_a_build_directory() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("build")).unwrap();
+    for name in ["a_one.txt", "a_two.txt"] {
+        fs::write(dir.join("build").join(name), "x").unwrap();
+    }
+
+    for extra in [&["--preview"][..], &["--no-interactive"]] {
+        let output = run(dir, &[&["group"], extra, &["build"]].concat());
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("build or vendor directory"), "{stderr}");
+        assert!(!stderr.contains("--no-ignore"), "{stderr}");
+    }
+    assert!(dir.join("build/a_one.txt").exists());
+}
+
+#[test]
 fn test_cli_group_dry_run_writes_nothing() {
     let tmp = fixture();
     let dir = tmp.path();

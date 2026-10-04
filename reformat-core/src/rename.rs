@@ -271,8 +271,10 @@ impl FileRenamer {
             CaseTransform::None => {}
         }
 
-        // 7. Add timestamp prefix (if specified)
-        if let Some(ts) = timestamp {
+        // 7. Add timestamp prefix, unless an earlier run already added one
+        if let Some(ts) =
+            timestamp.filter(|_| !has_date_prefix(&result, self.options.timestamp_format))
+        {
             result = format!("{}{}", ts, result);
         }
 
@@ -449,6 +451,25 @@ impl FileRenamer {
             }
         }
     }
+}
+
+/// True if `name` starts with a valid date in `format`, alone or followed by
+/// a separator. `12345678_data` is not a date, so it still gets a timestamp.
+fn has_date_prefix(name: &str, format: TimestampFormat) -> bool {
+    let (len, pattern) = match format {
+        TimestampFormat::Long => (8, "%Y%m%d"),
+        TimestampFormat::Short => (6, "%y%m%d"),
+        TimestampFormat::None => return false,
+    };
+    let Some(date) = name.get(..len) else {
+        return false;
+    };
+    date.bytes().all(|b| b.is_ascii_digit())
+        && name[len..]
+            .chars()
+            .next()
+            .is_none_or(|c| matches!(c, '-' | '_' | ' '))
+        && chrono::NaiveDate::parse_from_str(date, pattern).is_ok()
 }
 
 /// Splits a name without leading dots into stem and extension.
@@ -957,6 +978,52 @@ mod tests {
         assert_eq!(target_name(suffix(), "v1.2.txt"), "v1.2_v2.txt");
         assert_eq!(target_name(suffix(), "tar.gz"), "tar_v2.gz");
         assert_eq!(target_name(suffix(), "\u{e9}.gz"), "\u{e9}_v2.gz");
+    }
+
+    #[test]
+    fn test_has_date_prefix() {
+        use TimestampFormat::{Long, Short};
+        assert!(has_date_prefix("20261004-notes", Long));
+        assert!(has_date_prefix("20261004_notes", Long));
+        assert!(has_date_prefix("20261004", Long));
+        assert!(has_date_prefix("261004 notes", Short));
+        assert!(!has_date_prefix("12345678_data", Long), "month 56");
+        assert!(!has_date_prefix("20261304-x", Long), "month 13");
+        assert!(!has_date_prefix("202610041-x", Long), "nine digits");
+        assert!(
+            !has_date_prefix("20261004-x", Short),
+            "long date, short format"
+        );
+        assert!(!has_date_prefix("2026", Long));
+        assert!(!has_date_prefix("20261004-x", TimestampFormat::None));
+    }
+
+    #[test]
+    fn test_timestamp_is_added_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("notes.txt");
+        fs::write(&file, "content").unwrap();
+        for format in [TimestampFormat::Long, TimestampFormat::Short] {
+            let renamer = FileRenamer::new(RenameOptions {
+                timestamp_format: format,
+                ..Default::default()
+            });
+            renamer.process(tmp.path()).unwrap();
+            renamer.process(tmp.path()).unwrap();
+            let names: Vec<String> = fs::read_dir(tmp.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            let digits = if format == TimestampFormat::Long {
+                8
+            } else {
+                6
+            };
+            assert_eq!(names.len(), 1);
+            assert_eq!(names[0].len(), digits + "-notes.txt".len(), "{names:?}");
+            // Reset for the next format.
+            fs::rename(tmp.path().join(&names[0]), &file).unwrap();
+        }
     }
 
     #[test]

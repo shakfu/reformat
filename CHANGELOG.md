@@ -34,7 +34,7 @@ This release breaks the library API. See Changed.
 
 - `group` refuses to start when `changes.json` or `fixes.json` exists. It overwrote them after a warning, losing an earlier run's record whose references were not yet fixed. Refusing was chosen over writing a numbered file, which the user would then have to find.
 
-- `group` skips gitignored files. Git cannot restore them, and the dirty-tree guard does not check them for `group`.
+- `group` skips gitignored files, and refuses a build or vendor directory such as `build/` as its target. Git cannot restore ignored files, and the dirty-tree guard does not check them for `group`.
 
 - `indent --style tabs` and `editorconfig` leave `.yaml` and `.yml` files unchanged. YAML forbids tab indentation.
 
@@ -88,6 +88,14 @@ This release breaks the library API. See Changed.
 - `rename_files --add-prefix x_` turned `.env` into `x_.env`, which is not hidden. The leading dot now stays first: `.x_env`. Case transforms now apply to a dotfile's name, which was taken for an extension.
 
 - `rename_files --add-suffix` put the suffix inside a `.tar.*` extension: `a.tar_v2.gz`. It is now `a_v2.tar.gz`.
+
+- `reformat --allow-dirty replace ...` ignored the flag, because only the copy after the subcommand was read. `--allow-dirty` is now one global flag, accepted on either side.
+
+- `rename_files --timestamp-long` and `--timestamp-short` added another date on every run. A name that already starts with a valid date in the chosen format is now left alone. `12345678_data` is not a valid date, so it still gets one.
+
+- The dirty-tree guard ran a full `git status` for each path, so `$(git ls-files)` cost one scan per file. Paths are now checked in one call per repository.
+
+- The guard read path names as globs, so a dirty `a1.txt` refused a run on a clean `a[1].txt`.
 
 ## [0.3.0] - 2026-10-01
 

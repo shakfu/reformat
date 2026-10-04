@@ -72,9 +72,10 @@ struct Cli {
     #[arg(long = "config", value_name = "FILE", global = true)]
     config: Option<PathBuf>,
 
-    /// Let a preset or job with rename, group, convert or replace steps
-    /// modify files that have uncommitted changes
-    #[arg(long = "allow-dirty")]
+    /// Modify files that have uncommitted changes in git. Applies to
+    /// rename_files, group, convert, replace, apply_fixes, and presets or
+    /// jobs with those steps
+    #[arg(long = "allow-dirty", global = true)]
     allow_dirty: bool,
 
     #[command(flatten)]
@@ -308,10 +309,6 @@ enum Commands {
         /// Regex pattern to filter which words get converted
         #[arg(long = "word-filter")]
         word_filter: Option<String>,
-
-        /// Modify files even if they have uncommitted changes in git
-        #[arg(long = "allow-dirty")]
-        allow_dirty: bool,
     },
 
     /// Remove trailing whitespace from files
@@ -420,10 +417,6 @@ enum Commands {
         /// Add timestamp prefix in YYMMDD format (e.g., 250915_)
         #[arg(long = "timestamp-short")]
         timestamp_short: bool,
-
-        /// Modify files even if they have uncommitted changes in git
-        #[arg(long = "allow-dirty")]
-        allow_dirty: bool,
     },
 
     /// Group files by common prefix into subdirectories
@@ -481,10 +474,6 @@ enum Commands {
         /// Where to write proposed reference fixes [default: ./fixes.json]
         #[arg(long = "fixes-file")]
         fixes_file: Option<PathBuf>,
-
-        /// Modify files even if they have uncommitted changes in git
-        #[arg(long = "allow-dirty")]
-        allow_dirty: bool,
     },
 
     /// Normalize line endings across files
@@ -542,10 +531,6 @@ enum Commands {
         /// Match regardless of case
         #[arg(short = 'i', long = "ignore-case")]
         ignore_case: bool,
-
-        /// Modify files even if they have uncommitted changes in git
-        #[arg(long = "allow-dirty")]
-        allow_dirty: bool,
     },
 
     /// Insert or update file headers (license, copyright, etc.)
@@ -604,10 +589,6 @@ enum Commands {
         /// Show the fixes without applying them
         #[arg(short = 'd', long = "dry-run")]
         dry_run: bool,
-
-        /// Modify files even if they have uncommitted changes in git
-        #[arg(long = "allow-dirty")]
-        allow_dirty: bool,
     },
 }
 
@@ -1257,6 +1238,14 @@ fn group_selected(
     path: &Path,
     recursive: bool,
 ) -> anyhow::Result<FileGrouper> {
+    // The walk would skip it with advice to pass --no-ignore, which `group` lacks.
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if reformat_core::walk::DEFAULT_SKIP_DIRS.contains(&name) {
+        anyhow::bail!(
+            "'{}' is a build or vendor directory, which group does not process",
+            path.display()
+        );
+    }
     let selection = select::Selection::default();
     let keep: std::collections::HashSet<PathBuf> =
         select::discover(&[path.to_path_buf()], &selection, recursive, false)?
@@ -1732,6 +1721,7 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
         };
     };
 
+    let allow_dirty = cli.allow_dirty;
     match command {
         Commands::Convert {
             from_camel,
@@ -1758,7 +1748,6 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
             replace_suffix_to,
             glob,
             word_filter,
-            allow_dirty,
         } => {
             let cfg = ConvertConfig {
                 from_format: Some(
@@ -1883,7 +1872,6 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
             replace_suffix,
             timestamp_long,
             timestamp_short,
-            allow_dirty,
         } => {
             let case_transform = if to_lowercase {
                 Some("lowercase")
@@ -1950,7 +1938,6 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
             verbose_scan,
             changes_file,
             fixes_file,
-            allow_dirty,
         } => run_group(
             path,
             recursive,
@@ -2029,7 +2016,6 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
             replace_with,
             literal,
             ignore_case,
-            allow_dirty,
         } => {
             if find.len() != replace_with.len() {
                 anyhow::bail!(
@@ -2129,7 +2115,6 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
         Commands::ApplyFixes {
             fixes_file,
             dry_run,
-            allow_dirty,
         } => run_apply_fixes(&fixes_file, dry_run, allow_dirty),
 
         Commands::Presets => run_list_presets(cli.config.as_deref()),

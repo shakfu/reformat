@@ -305,6 +305,25 @@ fn test_destructive_commands_refuse_uncommitted_changes() {
         std::fs::read_to_string(dir.join("Notes.md")).unwrap(),
         "x\n"
     );
+
+    // Before the subcommand, the flag was accepted and ignored.
+    let out = run(
+        dir,
+        &[
+            "--allow-dirty",
+            "replace",
+            "-f",
+            "x",
+            "--replace-with",
+            "y",
+            "Notes.md",
+        ],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Notes.md")).unwrap(),
+        "y\n"
+    );
 }
 
 #[test]
@@ -575,4 +594,57 @@ fn test_apply_fixes_refuses_uncommitted_changes() {
     );
     let applied = run(dir, &["apply_fixes", "--allow-dirty", "fixes.json"]);
     assert!(applied.status.success(), "{:?}", applied);
+}
+
+/// The guard batches paths per repository. Each repository must still be
+/// checked, and a name with glob characters must match only itself.
+#[test]
+fn test_guard_checks_each_repository_and_literal_names() {
+    if !git_available() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (one, two) = (tmp.path().join("one"), tmp.path().join("two"));
+    for repo in [&one, &two] {
+        std::fs::create_dir(repo).unwrap();
+        init_repo(repo);
+    }
+    std::fs::write(one.join("a[1].txt"), "Title\n").unwrap();
+    std::fs::write(one.join("a1.txt"), "Title\n").unwrap();
+    assert!(git(&one, &["add", "."]));
+    assert!(git(
+        &one,
+        &[
+            "-c",
+            "user.email=t@e.com",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "m"
+        ]
+    ));
+
+    // As a glob, `a[1].txt` also matches the dirty `a1.txt`.
+    std::fs::write(one.join("a1.txt"), "Title edited\n").unwrap();
+    let replace = ["replace", "-f", "Title", "--replace-with", "T"];
+    let out = run(tmp.path(), &[&replace[..], &["one/a[1].txt"]].concat());
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        std::fs::read_to_string(one.join("a[1].txt")).unwrap(),
+        "T\n"
+    );
+    assert!(git(&one, &["checkout", "--", "."]));
+
+    // Clean paths in one repository must not hide changes in another.
+    std::fs::write(two.join("Notes.md"), "edited\n").unwrap();
+    let paths = ["one/README.md", "one/a1.txt", "two/Notes.md"];
+    let out = run(tmp.path(), &[&replace[..], &paths].concat());
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Notes.md"));
+    assert_eq!(
+        std::fs::read_to_string(one.join("a1.txt")).unwrap(),
+        "Title\n"
+    );
 }

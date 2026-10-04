@@ -14,15 +14,7 @@
 
 - [ ] One "may write" check on the resolved path (not in `.git`, tracked, clean), called from `write_atomic` and the renamer. It would replace the per-command `NEEDS_CLEAN_TREE` list and the separate `.git` checks. Cost: git awareness moves into `reformat-core`, or the check is passed in as a callback. #safety
 
-- [ ] `--allow-dirty` is declared 5 times. `reformat --allow-dirty replace ...` silently ignores the top-level copy. Make it one global flag. #cli
-
-- [ ] The dirty-tree guard runs one `git status` per path, so `$(git ls-files)` spawns N full scans. Batch the paths per repository. #safety
-
-- [ ] Timestamp renames prepend another date on every run. #rename
-
 - [ ] `group` can create a prefix directory named after an entry in `DEFAULT_SKIP_DIRS`, such as `build/`. Later walks and reference scans skip it. #group
-
-- [ ] `group build/` now groups nothing: the selection walk refuses a `DEFAULT_SKIP_DIRS` root without `--no-ignore`, which `group` lacks. #group
 
 - [ ] Change counts are off in places. `clean` counts a whitespace-only trailing line twice (`whitespace.rs`). `replace` counts matches replaced by identical text. `editorconfig` adds lines and line endings into one total (`style.rs`). #output
 
