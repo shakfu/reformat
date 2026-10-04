@@ -91,8 +91,6 @@ The project is organised as a Cargo workspace:
 
 - **reformat-cli** -- Thin CLI wrapper using clap. Parses arguments, loads config, calls into core.
 
-- **reformat-plugins** -- Plugin system foundation (not yet active).
-
 ### Observability
 
 - Per-file reporting by default; `-v` and `-vv` add diagnostics, `-q` silences everything but errors. Transformers report through the `log` facade, so a library consumer controls this too.
@@ -177,7 +175,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reformat-core = "0.3.0"
+reformat-core = "0.4.0"
 ```
 
 ### Case Conversion
@@ -391,7 +389,7 @@ To run reformat from [pre-commit](https://pre-commit.com), install the binary (`
 ```yaml
 repos:
   - repo: https://github.com/shakfu/reformat
-    rev: v0.3.0
+    rev: v0.4.0
     hooks:
 
       - id: reformat-clean         # trailing whitespace, final newline, trailing blank lines

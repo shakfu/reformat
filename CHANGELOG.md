@@ -6,7 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-04
+
 This release breaks the library API. See Changed.
+
+### Removed
+
+- The `reformat-plugins` crate. It was an empty placeholder; it returns when a plugin API exists. Versions already on crates.io are not yanked.
 
 ### Changed
 
@@ -37,6 +43,8 @@ This release breaks the library API. See Changed.
 - `group` skips gitignored files, and refuses a build or vendor directory such as `build/` as its target. Git cannot restore ignored files, and the dirty-tree guard does not check them for `group`.
 
 - `indent --style tabs` and `editorconfig` leave `.yaml` and `.yml` files unchanged. YAML forbids tab indentation.
+
+- `rename_files --add-prefix` leaves a name that already starts with the prefix, so a rerun does not stack it: `x_notes.txt` stays `x_notes.txt`, not `x_x_notes.txt`.
 
 ### Fixed
 
@@ -96,6 +104,8 @@ This release breaks the library API. See Changed.
 - The dirty-tree guard ran a full `git status` for each path, so `$(git ls-files)` cost one scan per file. Paths are now checked in one call per repository.
 
 - The guard read path names as globs, so a dirty `a1.txt` refused a run on a clean `a[1].txt`.
+
+- Change counts were too high. `clean` counted a whitespace-only trailing line twice, `replace` counted matches replaced by identical text, and `editorconfig` counted a line twice when it changed both content and ending. `editorconfig` now reports lines.
 
 ## [0.3.0] - 2026-10-01
 

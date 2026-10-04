@@ -1,4 +1,4 @@
-.PHONY: all build install uninstall clean test lint fmt publish publish-dry-run
+.PHONY: all build install uninstall clean test lint clippy audit fmt publish publish-dry-run
 
 # Override with: make install PREFIX=~/.local
 PREFIX ?= /usr/local
@@ -12,8 +12,14 @@ build:
 test:
 	@cargo test --workspace
 
-lint:
+lint: clippy
+
+clippy:
 	@cargo clippy --workspace --all-targets -- -D warnings
+
+# Needs cargo-audit: cargo install cargo-audit
+audit:
+	@cargo audit
 
 fmt:
 	@cargo fmt --all
@@ -35,14 +41,10 @@ uninstall:
 # yet. That is expected; `publish` below releases them in dependency order.
 publish-dry-run:
 	cargo publish --dry-run -p reformat-core
-	cargo publish --dry-run -p reformat-plugins
 	cargo publish --dry-run -p reformat
 
 publish:
 	cargo publish -p reformat-core
 	@echo "waiting for crates.io to index reformat-core..."
-	@sleep 15
-	cargo publish -p reformat-plugins
-	@echo "waiting for crates.io to index reformat-plugins..."
 	@sleep 15
 	cargo publish -p reformat

@@ -99,7 +99,7 @@ impl ContentStep for WhitespaceCleaner {
             && crate::step::matches_extension(&file.path, MARKDOWN_EXTENSIONS);
 
         // Each line keeps its own terminator, so a CRLF file stays CRLF.
-        let mut lines: Vec<(Cow<str>, &str)> = Vec::new();
+        let mut lines: Vec<(Cow<str>, &str, bool)> = Vec::new();
         for (body, terminator) in crate::lines::split_lines(text) {
             let cleaned = match body.trim_end() {
                 _ if !self.options.remove_trailing => Cow::Borrowed(body),
@@ -108,16 +108,19 @@ impl ContentStep for WhitespaceCleaner {
                 }
                 t => Cow::Borrowed(t),
             };
-            if cleaned != body {
-                changed += 1;
-            }
-            lines.push((cleaned, terminator));
+            let was_cleaned = cleaned != body;
+            changed += usize::from(was_cleaned);
+            lines.push((cleaned, terminator, was_cleaned));
         }
 
         if self.options.trim_trailing_blank_lines {
-            while lines.last().is_some_and(|(body, _)| body.trim().is_empty()) {
-                lines.pop();
-                changed += 1;
+            // A line already counted as cleaned is not counted again.
+            while lines
+                .last()
+                .is_some_and(|(body, _, _)| body.trim().is_empty())
+            {
+                let (_, _, was_cleaned) = lines.pop().unwrap();
+                changed += usize::from(!was_cleaned);
             }
         }
 
@@ -130,7 +133,7 @@ impl ContentStep for WhitespaceCleaner {
             }
         }
 
-        let output: String = lines.iter().flat_map(|(b, t)| [&**b, *t]).collect();
+        let output: String = lines.iter().flat_map(|(b, t, _)| [&**b, *t]).collect();
         (output != text).then_some((output, changed))
     }
 
@@ -433,6 +436,23 @@ mod tests {
         assert_eq!(clean_text(o.clone(), "a\r\n  \r\n\r\n"), "a\r\n");
         assert_eq!(clean_text(o.clone(), "a\n\nb\n"), "a\n\nb\n");
         assert_eq!(clean_text(o, "  \n\n"), "");
+    }
+
+    #[test]
+    fn test_each_line_is_counted_once() {
+        let o = WhitespaceOptions {
+            trim_trailing_blank_lines: true,
+            ..Default::default()
+        };
+        let target = FileTarget::file(Path::new("x.txt"));
+        let count = |text| {
+            WhitespaceCleaner::new(o.clone())
+                .transform(text, &target)
+                .unwrap()
+                .1
+        };
+        assert_eq!(count("a \n  \n\n"), 3);
+        assert_eq!(count("a\n  \n"), 1);
     }
 
     #[test]

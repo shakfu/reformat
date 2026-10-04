@@ -36,7 +36,7 @@ jobs:
       matrix:
         include:
           - toolchain: "1.82"
-            args: "-p reformat-core -p reformat-plugins"
+            args: "-p reformat-core"
           - toolchain: "1.88"
             args: "--workspace --all-targets"
     runs-on: ubuntu-latest

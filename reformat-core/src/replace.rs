@@ -157,13 +157,15 @@ impl ContentStep for ContentReplacer {
         let mut total_replacements = 0;
 
         for cp in &self.compiled {
-            let count = cp.regex.find_iter(&current).count();
-            if count > 0 {
-                let result = cp.regex.replace_all(&current, cp.replace.as_str());
-                if result != current {
-                    total_replacements += count;
-                    current = result.into_owned();
-                }
+            // A match replaced by identical text is not a replacement.
+            let result = cp.regex.replace_all(&current, |caps: &regex::Captures| {
+                let mut expanded = String::new();
+                caps.expand(&cp.replace, &mut expanded);
+                total_replacements += usize::from(expanded != caps[0]);
+                expanded
+            });
+            if let std::borrow::Cow::Owned(result) = result {
+                current = result;
             }
         }
 
@@ -439,6 +441,18 @@ mod tests {
         assert_eq!(out, "x = 1\r\ny = 2\r\n");
         let (out, _) = r.transform("x = 0\ry = 2\r", &file).unwrap();
         assert_eq!(out, "x = 1\ry = 2\r");
+    }
+
+    #[test]
+    fn test_identical_replacement_is_not_counted() {
+        let file = FileTarget::file(Path::new("a.txt"));
+        let r = replacer("colou?r", "color").unwrap();
+        let (out, n) = r.transform("color colour color\n", &file).unwrap();
+        assert_eq!(out, "color color color\n");
+        assert_eq!(n, 1);
+        assert!(r.transform("color\n", &file).is_none());
+        let r = replacer(r"(\d+)", "${1}").unwrap();
+        assert!(r.transform("a 1 2\n", &file).is_none());
     }
 
     #[test]

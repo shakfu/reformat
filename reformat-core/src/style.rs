@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
+use crate::lines::split_lines;
 use crate::step::{ContentStep, FileTarget};
 use crate::{
     EndingsNormalizer, EndingsOptions, IndentNormalizer, IndentOptions, IndentStyle, LineEnding,
@@ -112,21 +113,28 @@ impl<F: Fn(&Path) -> FileStyle> ContentStep for StyleStep<F> {
         steps.extend(endings.as_ref().map(|s| s as &dyn ContentStep));
 
         let mut current = text.to_string();
-        let mut units = 0;
         for step in steps {
-            if let Some((next, n)) = step.transform(&current, file) {
+            if let Some((next, _)) = step.transform(&current, file) {
                 current = next;
-                units += n;
             }
         }
-        (current != text).then_some((current, units))
+        // The steps keep one output line per input line. Counted here, a line
+        // both trimmed and given a new ending is one change, not two.
+        let lines = split_lines(text)
+            .count()
+            .abs_diff(split_lines(&current).count())
+            + split_lines(text)
+                .zip(split_lines(&current))
+                .filter(|(a, b)| a != b)
+                .count();
+        (current != text).then_some((current, lines))
     }
 
     fn describe(&self, units: usize, dry_run: bool) -> String {
         if dry_run {
-            format!("Would apply EditorConfig ({} change(s)) to", units)
+            format!("Would apply EditorConfig ({} line(s)) to", units)
         } else {
-            format!("Applied EditorConfig ({} change(s)) to", units)
+            format!("Applied EditorConfig ({} line(s)) to", units)
         }
     }
 }
@@ -160,6 +168,20 @@ mod tests {
         );
         assert!(step.accepts(&FileTarget::file(Path::new("Makefile"))));
         assert!(step.accepts(&FileTarget::file(Path::new(".env"))));
+    }
+
+    #[test]
+    fn test_each_changed_line_counts_once() {
+        let style = FileStyle {
+            trim_trailing_whitespace: true,
+            end_of_line: Some(LineEnding::Crlf),
+            ..Default::default()
+        };
+        let step = StyleStep::new(move |_: &Path| style.clone(), true);
+        let target = FileTarget::file(Path::new("x.txt"));
+        let (out, lines) = step.transform("a  \nb\r\nc \r\n", &target).unwrap();
+        assert_eq!(out, "a\r\nb\r\nc\r\n");
+        assert_eq!(lines, 2);
     }
 
     #[test]

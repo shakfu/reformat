@@ -72,9 +72,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "autocfg"
@@ -479,7 +479,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "reformat"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "reformat-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -511,10 +511,6 @@ dependencies = [
  "tempfile",
  "walkdir",
 ]
-
-[[package]]
-name = "reformat-plugins"
-version = "0.3.0"
 
 [[package]]
 name = "regex"

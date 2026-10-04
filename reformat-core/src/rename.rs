@@ -271,17 +271,18 @@ impl FileRenamer {
             CaseTransform::None => {}
         }
 
-        // 7. Add timestamp prefix, unless an earlier run already added one
+        // 7-8. Add timestamp, then prefix. Each is added once: a name an
+        // earlier run gave them keeps the copies it has.
+        let prefix = self.options.add_prefix.as_deref().unwrap_or("");
+        if let Some(rest) = result.strip_prefix(prefix) {
+            result = rest.to_string();
+        }
         if let Some(ts) =
             timestamp.filter(|_| !has_date_prefix(&result, self.options.timestamp_format))
         {
             result = format!("{}{}", ts, result);
         }
-
-        // 8. Add prefix
-        if let Some(prefix) = &self.options.add_prefix {
-            result = format!("{}{}", prefix, result);
-        }
+        result = format!("{}{}", prefix, result);
 
         // 9. Add suffix (before extension)
         if let Some(suffix) = &self.options.add_suffix {
@@ -996,6 +997,39 @@ mod tests {
         );
         assert!(!has_date_prefix("2026", Long));
         assert!(!has_date_prefix("20261004-x", TimestampFormat::None));
+    }
+
+    #[test]
+    fn test_prefix_is_added_once() {
+        let prefix = || RenameOptions {
+            add_prefix: Some("x_".into()),
+            ..Default::default()
+        };
+        assert_eq!(target_name(prefix(), "notes.txt"), "x_notes.txt");
+        assert_eq!(target_name(prefix(), "x_notes.txt"), "x_notes.txt");
+        assert_eq!(target_name(prefix(), ".x_env"), ".x_env");
+        assert_eq!(target_name(prefix(), "x_"), "x_");
+    }
+
+    #[test]
+    fn test_prefix_and_timestamp_are_added_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("notes.txt"), "content").unwrap();
+        let renamer = FileRenamer::new(RenameOptions {
+            add_prefix: Some("x_".into()),
+            timestamp_format: TimestampFormat::Long,
+            ..Default::default()
+        });
+        renamer.process(tmp.path()).unwrap();
+        renamer.process(tmp.path()).unwrap();
+        let names: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1);
+        let name = &names[0];
+        assert!(name.starts_with("x_"), "{name}");
+        assert_eq!(name.len(), "x_".len() + 8 + "-notes.txt".len(), "{name}");
     }
 
     #[test]

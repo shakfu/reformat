@@ -16,10 +16,6 @@
 
 - [ ] `group` can create a prefix directory named after an entry in `DEFAULT_SKIP_DIRS`, such as `build/`. Later walks and reference scans skip it. #group
 
-- [ ] Change counts are off in places. `clean` counts a whitespace-only trailing line twice (`whitespace.rs`). `replace` counts matches replaced by identical text. `editorconfig` adds lines and line endings into one total (`style.rs`). #output
-
-- [ ] `reformat-plugins` is an empty crate published to crates.io. Drop it until a plugin API exists, or stop publishing it. #release
-
 - [ ] `CombinedProcessor` aborts on the first error, while `run_content_steps` collects errors and continues. #library
 
 - [ ] A malformed `.editorconfig` prints "All files already match" before the error line. #editorconfig

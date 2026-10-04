@@ -2,12 +2,11 @@
 members = [
     "reformat-core",
     "reformat-cli",
-    "reformat-plugins",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 # Floor for the library crates, driven by Option::is_none_or.
 # reformat-cli overrides this: its dependency tree needs more.
@@ -21,8 +20,7 @@ categories = ["command-line-utilities", "development-tools", "text-processing"]
 
 [workspace.dependencies]
 # Internal crates, versioned in one place so a release bump cannot go stale.
-reformat-core = { path = "reformat-core", version = "0.3.0" }
-reformat-plugins = { path = "reformat-plugins", version = "0.3.0" }
+reformat-core = { path = "reformat-core", version = "0.4.0" }
 
 # Shared dependencies across workspace
 regex = "1.11"

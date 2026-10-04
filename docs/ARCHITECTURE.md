@@ -10,7 +10,6 @@ and where new code goes. The per-type API is documented in the rustdoc
 |---|---|---|
 | `reformat-core` | Transformations, the content-step runner, presets, change records, reference fixing | 1.82 |
 | `reformat` (`reformat-cli/`) | Argument parsing, file discovery, output, exit status, git guard | 1.88 |
-| `reformat-plugins` | Empty placeholder | 1.82 |
 
 The floors differ because the CLI's dependencies need 1.88 (`simplelog ->
 time`, `ignore`). File discovery lives in the CLI for that reason. CI checks
