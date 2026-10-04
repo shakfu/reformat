@@ -164,7 +164,15 @@ impl ContentStep for IndentNormalizer {
             )
     }
 
-    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+    fn transform(&self, text: &str, file: &FileTarget) -> Option<(String, usize)> {
+        // YAML forbids tab indentation. Checked here, not in `accepts`, so the
+        // editorconfig step is covered too.
+        if self.options.style == IndentStyle::Tabs
+            && crate::step::matches_extension(&file.path, &[".yaml", ".yml"])
+        {
+            log::debug!("Not indenting YAML with tabs: {}", file.path.display());
+            return None;
+        }
         let mut output = String::with_capacity(text.len());
         let mut changed_count = 0;
 
@@ -466,5 +474,25 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(normalizer.normalize_file(&file).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_yaml_is_never_indented_with_tabs() {
+        let tabs = IndentNormalizer::new(IndentOptions {
+            style: IndentStyle::Tabs,
+            ..Default::default()
+        });
+        for name in ["a.yaml", "a.YML"] {
+            let file = FileTarget::file(Path::new(name));
+            assert!(tabs.transform("a:\n    b: 1\n", &file).is_none());
+        }
+        let py = FileTarget::file(Path::new("a.py"));
+        assert!(tabs.transform("    x\n", &py).is_some());
+        let yaml = FileTarget::file(Path::new("a.yaml"));
+        let spaces = IndentNormalizer::with_defaults();
+        assert_eq!(
+            spaces.transform("a:\n\tb: 1\n", &yaml).unwrap().0,
+            "a:\n    b: 1\n"
+        );
     }
 }

@@ -319,7 +319,7 @@ mod tests {
     fn test_default_does_not_rename() {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("Cargo.toml"), "[package]\n").unwrap();
-        fs::write(tmp.path().join("README.md"), "Title  \n").unwrap();
+        fs::write(tmp.path().join("README.md"), "Title \n").unwrap();
 
         let stats = CombinedProcessor::with_defaults()
             .process(tmp.path())

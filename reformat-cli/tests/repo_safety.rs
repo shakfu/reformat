@@ -37,8 +37,8 @@ fn git_available() -> bool {
 /// deliberately transformable (mixed case, trailing whitespace).
 fn init_repo(dir: &Path) {
     assert!(git(dir, &["init", "-q"]), "git init failed");
-    std::fs::write(dir.join("README.md"), "Title  \ntext  \n").unwrap();
-    std::fs::write(dir.join("Notes.md"), "Body  \n").unwrap();
+    std::fs::write(dir.join("README.md"), "Title \ntext \n").unwrap();
+    std::fs::write(dir.join("Notes.md"), "Body \n").unwrap();
     assert!(git(dir, &["add", "."]), "git add failed");
     assert!(
         git(
@@ -182,7 +182,7 @@ fn test_transformers_skip_build_directories() {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("Vendored.md"), "text  \n").unwrap();
     }
-    std::fs::write(dir.join("Own.md"), "text  \n").unwrap();
+    std::fs::write(dir.join("Own.md"), "text \n").unwrap();
 
     run(dir, &["rename_files", "--to-lowercase", "."]);
     run(dir, &["clean", "-r", "."]);
@@ -337,7 +337,7 @@ fn test_guard_scope() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     init_repo(dir);
-    std::fs::write(dir.join("Notes.md"), "edited  \n").unwrap();
+    std::fs::write(dir.join("Notes.md"), "edited \n").unwrap();
 
     let out = run(dir, &["rename_files", "--to-uppercase", "README.md"]);
     assert!(out.status.success(), "{:?}", out);
@@ -535,7 +535,7 @@ fn test_git_failure_refuses_destructive_run() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot check"));
     assert_eq!(
         std::fs::read_to_string(dir.join("README.md")).unwrap(),
-        "Title  \ntext  \n"
+        "Title \ntext \n"
     );
 }
 

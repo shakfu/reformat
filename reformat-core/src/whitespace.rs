@@ -1,5 +1,6 @@
 //! Whitespace cleaning transformer
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use crate::step::{ContentStep, FileTarget};
@@ -9,6 +10,10 @@ use crate::step::{ContentStep, FileTarget};
 pub struct WhitespaceOptions {
     /// Remove trailing whitespace from lines
     pub remove_trailing: bool,
+    /// In Markdown files, a non-blank line ending in two or more spaces
+    /// keeps exactly two: a hard line break. pre-commit's
+    /// `--markdown-linebreak-ext` does the same.
+    pub keep_markdown_breaks: bool,
     /// Append a line terminator to a non-empty file that lacks one
     pub insert_final_newline: bool,
     /// Remove whitespace-only lines at the end of the file
@@ -25,6 +30,7 @@ impl Default for WhitespaceOptions {
     fn default() -> Self {
         WhitespaceOptions {
             remove_trailing: true,
+            keep_markdown_breaks: true,
             insert_final_newline: false,
             trim_trailing_blank_lines: false,
             file_extensions: vec![
@@ -44,6 +50,8 @@ impl Default for WhitespaceOptions {
 pub struct WhitespaceCleaner {
     options: WhitespaceOptions,
 }
+
+const MARKDOWN_EXTENSIONS: &[&str] = &[".md", ".markdown", ".qmd", ".rmd"];
 
 impl WhitespaceCleaner {
     /// Creates a new whitespace cleaner with the given options
@@ -85,16 +93,20 @@ impl ContentStep for WhitespaceCleaner {
         )
     }
 
-    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+    fn transform(&self, text: &str, file: &FileTarget) -> Option<(String, usize)> {
         let mut changed = 0;
+        let keep_breaks = self.options.keep_markdown_breaks
+            && crate::step::matches_extension(&file.path, MARKDOWN_EXTENSIONS);
 
         // Each line keeps its own terminator, so a CRLF file stays CRLF.
-        let mut lines: Vec<(&str, &str)> = Vec::new();
+        let mut lines: Vec<(Cow<str>, &str)> = Vec::new();
         for (body, terminator) in crate::lines::split_lines(text) {
-            let cleaned = if self.options.remove_trailing {
-                body.trim_end()
-            } else {
-                body
+            let cleaned = match body.trim_end() {
+                _ if !self.options.remove_trailing => Cow::Borrowed(body),
+                t if keep_breaks && !t.is_empty() && body.ends_with("  ") => {
+                    Cow::Owned(format!("{t}  "))
+                }
+                t => Cow::Borrowed(t),
             };
             if cleaned != body {
                 changed += 1;
@@ -118,7 +130,7 @@ impl ContentStep for WhitespaceCleaner {
             }
         }
 
-        let output: String = lines.iter().flat_map(|(b, t)| [*b, *t]).collect();
+        let output: String = lines.iter().flat_map(|(b, t)| [&**b, *t]).collect();
         (output != text).then_some((output, changed))
     }
 
@@ -364,6 +376,31 @@ mod tests {
             .transform(text, &target)
             .map(|(s, _)| s)
             .unwrap_or_else(|| text.to_string())
+    }
+
+    fn clean_named(options: WhitespaceOptions, name: &str, text: &str) -> String {
+        let target = FileTarget::file(Path::new(name));
+        WhitespaceCleaner::new(options)
+            .transform(text, &target)
+            .map(|(s, _)| s)
+            .unwrap_or_else(|| text.to_string())
+    }
+
+    #[test]
+    fn test_markdown_hard_line_breaks_are_kept() {
+        let o = WhitespaceOptions::default;
+        let text = "one  \r\ntwo \t   \nthree \n   \nfour\t\n";
+        assert_eq!(
+            clean_named(o(), "a.md", text),
+            "one  \r\ntwo  \nthree\n\nfour\n"
+        );
+        assert_eq!(clean_named(o(), "a.QMD", "x   \n"), "x  \n");
+        assert_eq!(clean_named(o(), "a.txt", "x  \n"), "x\n");
+        let off = WhitespaceOptions {
+            keep_markdown_breaks: false,
+            ..o()
+        };
+        assert_eq!(clean_named(off, "a.md", "x  \n"), "x\n");
     }
 
     #[test]

@@ -961,10 +961,15 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
                 );
             };
             let cfg = preset.group.clone().unwrap_or_default();
-            let result = FileGrouper::new(cfg.to_options(dry_run)?).process_with_changes(path)?;
+            let changes_path = (!dry_run)
+                .then(|| resolve_record_path(None, "changes.json"))
+                .transpose()?;
+            let options = cfg.to_options(dry_run)?;
+            let recursive = options.recursive;
+            let result = group_selected(FileGrouper::new(options), path, recursive)?
+                .process_with_changes(path)?;
             exec.errors.extend(result.stats.errors.iter().cloned());
-            if !dry_run && !result.changes.is_empty() {
-                let changes_path = resolve_record_path(None, "changes.json")?;
+            if let Some(changes_path) = changes_path.filter(|_| !result.changes.is_empty()) {
                 result.changes.write_to_file(&changes_path)?;
                 info!("Changes recorded to: {}", changes_path.display());
             }
@@ -1245,15 +1250,35 @@ fn run_default(recursive: bool, inv: &Invocation) -> anyhow::Result<bool> {
     finish(&exec, flags)
 }
 
-/// Resolves where a JSON record should be written, warning before replacing
-/// an existing file rather than silently clobbering it.
+/// Restricts `grouper` to the files a walk selects. Git cannot restore a
+/// gitignored file, and the dirty-tree guard does not check them for `group`.
+fn group_selected(
+    grouper: FileGrouper,
+    path: &Path,
+    recursive: bool,
+) -> anyhow::Result<FileGrouper> {
+    let selection = select::Selection::default();
+    let keep: std::collections::HashSet<PathBuf> =
+        select::discover(&[path.to_path_buf()], &selection, recursive, false)?
+            .into_iter()
+            .filter_map(|f| f.target.path.canonicalize().ok())
+            .collect();
+    Ok(grouper.with_filter(move |p| keep.contains(p)))
+}
+
+/// Resolves where a JSON record should be written, refusing an existing file.
+/// It may hold an earlier run's moves whose references are not fixed yet.
 fn resolve_record_path(explicit: Option<PathBuf>, default_name: &str) -> anyhow::Result<PathBuf> {
     let path = match explicit {
         Some(p) => p,
         None => std::env::current_dir()?.join(default_name),
     };
-    if path.exists() {
-        warn!("Overwriting existing file: {}", path.display());
+    if path.symlink_metadata().is_ok() {
+        anyhow::bail!(
+            "{} exists from an earlier run. Apply or remove it, or choose another \
+             file with --changes-file or --fixes-file.",
+            path.display()
+        );
     }
     Ok(path)
 }
@@ -1381,7 +1406,7 @@ fn run_group(
         recursive: Some(recursive),
     };
 
-    let grouper = FileGrouper::new(cfg.to_options(dry_run)?);
+    let grouper = group_selected(FileGrouper::new(cfg.to_options(dry_run)?), &path, recursive)?;
 
     if preview {
         if !path.is_dir() {
@@ -1420,7 +1445,15 @@ fn run_group(
         }
         return Ok(false);
     }
+    // Checked before any move, so a refusal leaves the tree unchanged.
+    let mut record_paths = None;
     if !dry_run {
+        let changes_path = resolve_record_path(changes_file, "changes.json")?;
+        let may_scan = !no_interactive || scope.is_some();
+        let fixes_path = may_scan
+            .then(|| resolve_record_path(fixes_file, "fixes.json"))
+            .transpose()?;
+        record_paths = Some((changes_path, fixes_path));
         let mut touched = vec![path.clone()];
         touched.extend(scope.clone());
         dirty::ensure_clean("group", &touched, false, allow_dirty)?;
@@ -1457,15 +1490,14 @@ fn run_group(
 
     // A dry run must not leave anything behind: a record of moves that did
     // not happen would mislead the reference fixer.
-    if dry_run {
+    let Some((changes_path, fixes_path)) = record_paths else {
         info!("[DRY-RUN] No changes file written.");
         return done(false);
-    }
+    };
     if result.changes.is_empty() {
         return done(false);
     }
 
-    let changes_path = resolve_record_path(changes_file, "changes.json")?;
     result.changes.write_to_file(&changes_path)?;
     info!("\nChanges recorded to: {}", changes_path.display());
 
@@ -1490,12 +1522,10 @@ fn run_group(
         }
     }
 
-    let stale_fixes = fixes_file
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("fixes.json"));
+    let fixes_path = fixes_path.expect("resolved whenever a scan may run");
     let scan_options = ScanOptions {
         verbose: verbose_scan,
-        skip_files: vec![changes_path.clone(), stale_fixes],
+        skip_files: vec![changes_path.clone(), fixes_path.clone()],
         ..Default::default()
     };
     debug!("Scanning for broken references...");
@@ -1507,7 +1537,6 @@ fn run_group(
         return done(false);
     }
 
-    let fixes_path = resolve_record_path(fixes_file, "fixes.json")?;
     fix_record.write_to_file(&fixes_path)?;
     info!("\nFound {} broken reference(s).", fix_record.len());
     info!("Proposed fixes written to: {}", fixes_path.display());
@@ -1528,11 +1557,18 @@ fn run_group(
         );
     }
     if fix_record.len() > 10 {
-        info!("  ... and {} more (see fixes.json)", fix_record.len() - 10);
+        info!(
+            "  ... and {} more (see {})",
+            fix_record.len() - 10,
+            fixes_path.display()
+        );
     }
 
     info!("");
-    if prompt_yes_no("Review fixes.json and apply changes?") {
+    if prompt_yes_no(&format!(
+        "Review {} and apply changes?",
+        fixes_path.display()
+    )) {
         // The scan directories were chosen at the prompt, after the guard
         // above ran. Check the files the fixes edit, except those the
         // grouping itself just moved.

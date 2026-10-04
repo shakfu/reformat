@@ -308,14 +308,10 @@ impl FileRenamer {
             .and_then(|n| n.to_str())
             .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
 
-        // Split filename and extension
-        let (name, extension) = if let Some(pos) = file_name.rfind('.') {
-            let name = &file_name[..pos];
-            let ext = &file_name[pos + 1..];
-            (name, Some(ext))
-        } else {
-            (file_name, None)
-        };
+        // A leading dot marks a hidden file, not an extension, and stays first.
+        let rest = file_name.trim_start_matches('.');
+        let hidden = &file_name[..file_name.len() - rest.len()];
+        let (name, extension) = split_extension(rest);
 
         // Detect separator style from the filename
         let separator = Self::detect_separator(name);
@@ -323,7 +319,10 @@ impl FileRenamer {
         // Get timestamp if needed (with detected separator)
         let timestamp = self.format_timestamp(path, separator);
 
-        let new_name = self.transform_name(name, extension, timestamp);
+        let new_name = format!(
+            "{hidden}{}",
+            self.transform_name(name, extension, timestamp)
+        );
 
         if new_name == file_name {
             return Ok(None);
@@ -450,6 +449,23 @@ impl FileRenamer {
             }
         }
     }
+}
+
+/// Splits a name without leading dots into stem and extension.
+///
+/// `.tar.gz` and other `.tar.*` extensions count as one extension. Other
+/// double extensions are not recognised: `v1.2.txt` has the stem `v1.2`.
+fn split_extension(name: &str) -> (&str, Option<&str>) {
+    let Some(pos) = name.rfind('.') else {
+        return (name, None);
+    };
+    let stem = &name[..pos];
+    let tar = stem.len().saturating_sub(4);
+    let pos = match stem.get(tar..) {
+        Some(t) if t.eq_ignore_ascii_case(".tar") => tar,
+        _ => pos,
+    };
+    (&name[..pos], Some(&name[pos + 1..]))
 }
 
 /// True if `a` and `b` name the same directory entry, as two spellings of one
@@ -905,6 +921,42 @@ mod tests {
         assert_eq!(count, 2);
         assert!(test_dir.join("file1.txt").exists());
         assert!(sub_dir.join("file2.txt").exists());
+    }
+
+    fn target_name(opts: RenameOptions, name: &str) -> String {
+        let path = Path::new("d").join(name);
+        match FileRenamer::new(opts).target_path(&path).unwrap() {
+            Some(p) => p.file_name().unwrap().to_str().unwrap().to_string(),
+            None => name.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_hidden_name_keeps_leading_dot() {
+        let prefix = || RenameOptions {
+            add_prefix: Some("x_".into()),
+            ..Default::default()
+        };
+        assert_eq!(target_name(prefix(), ".env"), ".x_env");
+        assert_eq!(target_name(prefix(), ".eslintrc.json"), ".x_eslintrc.json");
+        let suffix = RenameOptions {
+            add_suffix: Some("_v2".into()),
+            ..Default::default()
+        };
+        assert_eq!(target_name(suffix, ".env"), ".env_v2");
+    }
+
+    #[test]
+    fn test_tar_extension_is_one_extension() {
+        let suffix = || RenameOptions {
+            add_suffix: Some("_v2".into()),
+            ..Default::default()
+        };
+        assert_eq!(target_name(suffix(), "a.tar.gz"), "a_v2.tar.gz");
+        assert_eq!(target_name(suffix(), "a.TAR.XZ"), "a_v2.TAR.XZ");
+        assert_eq!(target_name(suffix(), "v1.2.txt"), "v1.2_v2.txt");
+        assert_eq!(target_name(suffix(), "tar.gz"), "tar_v2.gz");
+        assert_eq!(target_name(suffix(), "\u{e9}.gz"), "\u{e9}_v2.gz");
     }
 
     #[test]

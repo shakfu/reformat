@@ -130,7 +130,7 @@ fn test_diff_shows_line_ending_changes_and_combines_steps() {
 
 #[test]
 fn test_multiple_paths() {
-    let tmp = fixture(&[("a.py", "a  \n"), ("b.md", "b  \n"), ("c.py", "c  \n")]);
+    let tmp = fixture(&[("a.py", "a  \n"), ("b.md", "b \n"), ("c.py", "c  \n")]);
     let dir = tmp.path();
 
     let out = run(dir, &["clean", "a.py", "b.md"]);
@@ -231,6 +231,31 @@ fn test_gitignore_is_respected_unless_no_ignore() {
     assert!(run(dir, &["clean", "--no-ignore", "."]).status.success());
     assert_eq!(read(dir, "generated.py"), "g\n");
     assert_eq!(read(dir, "build/out.py"), "o\n");
+}
+
+#[test]
+fn test_group_leaves_gitignored_files_alone() {
+    let tmp = fixture(&[
+        (".gitignore", "gen_*\n"),
+        ("gen_a.txt", ""),
+        ("gen_b.txt", ""),
+        ("src_a.txt", ""),
+        ("src_b.txt", ""),
+        ("sub/gen_c.txt", ""),
+        ("sub/gen_d.txt", ""),
+    ]);
+    let dir = tmp.path();
+    fs::create_dir(dir.join(".git")).unwrap();
+
+    let preview = run(dir, &["group", "--preview", "-r", "."]);
+    assert!(!stdout(&preview).contains("gen_a.txt"), "{:?}", preview);
+
+    let out = run(dir, &["group", "--no-interactive", "-r", "."]);
+    assert!(out.status.success(), "{:?}", out);
+    assert!(dir.join("src/src_a.txt").exists());
+    for name in ["gen_a.txt", "gen_b.txt", "sub/gen_c.txt", "sub/gen_d.txt"] {
+        assert!(dir.join(name).exists(), "{name} was moved");
+    }
 }
 
 #[test]
@@ -513,7 +538,7 @@ fn test_stdin_with_default_command_job_and_editorconfig() {
     let out = run_stdin(
         dir,
         &["--stdin-filename", "n.md"],
-        "done \u{2705}  \n".as_bytes(),
+        "done \u{2705} \n".as_bytes(),
     );
     assert_eq!(stdout(&out), "done [x]\n");
 
@@ -694,7 +719,7 @@ fn test_config_flag_selects_the_file() {
     let tmp = fixture(&[
         ("reformat.json", r#"{"p": {"steps": ["emojis"]}}"#),
         ("other.json", r#"{"p": {"steps": ["clean"]}}"#),
-        ("a.md", "x  \n"),
+        ("a.md", "x \n"),
     ]);
     let dir = tmp.path();
 

@@ -63,19 +63,28 @@ pub struct GroupResult {
 /// File grouper for organizing files by prefix into subdirectories
 pub struct FileGrouper {
     options: GroupOptions,
+    keep: Box<dyn Fn(&Path) -> bool>,
 }
 
 impl FileGrouper {
     /// Creates a new file grouper with the given options
     pub fn new(options: GroupOptions) -> Self {
-        FileGrouper { options }
+        FileGrouper {
+            options,
+            keep: Box::new(|_| true),
+        }
     }
 
     /// Creates a grouper with default options
     pub fn with_defaults() -> Self {
-        FileGrouper {
-            options: GroupOptions::default(),
-        }
+        Self::new(GroupOptions::default())
+    }
+
+    /// Groups only files for which `keep` returns true. It is given canonical
+    /// paths. The CLI uses this to leave gitignored files alone.
+    pub fn with_filter(mut self, keep: impl Fn(&Path) -> bool + 'static) -> Self {
+        self.keep = Box::new(keep);
+        self
     }
 
     /// Extracts the prefix from a filename based on the separator
@@ -144,6 +153,9 @@ impl FileGrouper {
             // Regular files only. A moved relative symlink would dangle, and
             // `is_file` follows links, so the entry's own type is checked.
             if !entry.file_type()?.is_file() {
+                continue;
+            }
+            if !(self.keep)(&path) {
                 continue;
             }
 
@@ -369,7 +381,8 @@ impl FileGrouper {
             ));
         }
 
-        let prefix_map = self.analyze_directory(path)?;
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let prefix_map = self.analyze_directory(&path)?;
 
         // Filter by min_count and convert PathBuf to String
         let result: std::collections::BTreeMap<String, Vec<String>> = prefix_map

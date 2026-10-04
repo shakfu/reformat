@@ -1634,6 +1634,34 @@ fn test_cli_group_strip_prefix_and_preview() {
 }
 
 #[test]
+fn test_cli_group_refuses_existing_records_before_moving() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    for name in ["a_one.txt", "a_two.txt"] {
+        fs::write(dir.join(name), "x").unwrap();
+    }
+
+    for (record, scope) in [("changes.json", None), ("fixes.json", Some("."))] {
+        fs::write(dir.join(record), "earlier run").unwrap();
+        let mut args = vec!["group", "--no-interactive"];
+        args.extend(scope.map(|s| ["--scope", s]).into_iter().flatten());
+        args.push(".");
+        let output = run(dir, &args);
+        assert!(!output.status.success(), "{record}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("earlier run"));
+        assert_eq!(fs::read_to_string(dir.join(record)).unwrap(), "earlier run");
+        assert!(dir.join("a_one.txt").exists(), "{record}: moved a file");
+        fs::remove_file(dir.join(record)).unwrap();
+    }
+
+    // Without a scan, fixes.json is never written, so it does not block.
+    fs::write(dir.join("fixes.json"), "earlier run").unwrap();
+    let output = run(dir, &["group", "--no-interactive", "."]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(dir.join("a/a_one.txt").exists());
+}
+
+#[test]
 fn test_cli_group_dry_run_writes_nothing() {
     let tmp = fixture();
     let dir = tmp.path();

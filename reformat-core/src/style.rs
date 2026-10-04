@@ -83,6 +83,8 @@ impl<F: Fn(&Path) -> FileStyle> ContentStep for StyleStep<F> {
 
         let whitespace = WhitespaceCleaner::new(WhitespaceOptions {
             remove_trailing: style.trim_trailing_whitespace,
+            // EditorConfig turns trimming off per section instead.
+            keep_markdown_breaks: false,
             insert_final_newline: style.insert_final_newline,
             trim_trailing_blank_lines: false,
             file_extensions: any.clone(),
