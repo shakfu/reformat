@@ -2,7 +2,7 @@
 
 A modular code transformation framework. Each transformer handles one concern -- renaming files, normalising whitespace, converting identifier case, etc. -- and the pipeline system lets you compose them into multi-step workflows that run in a single invocation.
 
-> **Upgrade if you are on 0.1.6 or earlier.** > Those versions did not exclude `.git` when walking a directory, so > `reformat rename_files` and the default `reformat -r <path>` could rename > files inside it -- `HEAD`, `config`, `index` -- destroying the repository. > Renames are not journalled, so there was nothing to undo it with. > Versions 0.1.4 through 0.1.6 have been yanked from crates.io; `cargo install > reformat` now gets a fixed release. See the 0.1.7 entry in > [CHANGELOG.md](CHANGELOG.md) for the full list of fixes.
+> **Upgrade if you are on 0.1.6 or earlier.** Those versions did not exclude `.git` when walking a directory, so `reformat rename_files` and the default `reformat -r <path>` could rename files inside it -- `HEAD`, `config`, `index` -- destroying the repository. Renames are not journalled, so there was nothing to undo it with. Versions 0.1.4 through 0.1.6 have been yanked from crates.io; `cargo install reformat` now gets a fixed release. See the 0.1.7 entry in [CHANGELOG.md](CHANGELOG.md) for the full list of fixes.
 
 ## Features
 

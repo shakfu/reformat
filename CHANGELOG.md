@@ -84,8 +84,7 @@ This release breaks the library API. See Changed.
 
 - `CombinedProcessor` with `lowercase_filenames` failed on `Foo.TXT`: it looked for `foo.txt`, but the renamer keeps the extension's case.
 
-- `--check --diff` exited 0 when the reader closed the pipe early, as
-  `| head` does. It now exits 1.
+- `--check --diff` exited 0 when the reader closed the pipe early, as `| head` does. It now exits 1.
 
 - `--diff` ran for minutes on a large file in which most lines change. The diff now stops refining after one second.
 
@@ -241,8 +240,7 @@ A documentation and metadata release. No behavioural changes.
 
 **`header --update-year` updates the existing header instead of duplicating it**
 
-- The year-flexibility regex was `(?:19|20)\d\{2\}`. The escaped braces made
-  `\{2\}` a literal `{2}` rather than a repetition quantifier, so the substitution never fired, no year-variant header was ever recognised, and the update branch was unreachable. Running `--update-year` in a new year inserted a second header above the first; run annually, headers accumulated. `CHANGELOG.md` for 0.1.6 claimed this feature worked.
+- The year-flexibility regex was `(?:19|20)\d\{2\}`. The escaped braces made `\{2\}` a literal `{2}` rather than a repetition quantifier, so the substitution never fired, no year-variant header was ever recognised, and the update branch was unreachable. Running `--update-year` in a new year inserted a second header above the first; run annually, headers accumulated. `CHANGELOG.md` for 0.1.6 claimed this feature worked.
 
 - Header detection is now anchored to the header zone -- the top of the file, after any shebang and leading blank lines -- so a year-variant string elsewhere in the body (a test fixture, a vendored blob) is no longer mistaken for the file's own header and rewritten in place. Previously detection searched the entire file.
 
@@ -355,8 +353,6 @@ A documentation and metadata release. No behavioural changes.
 - Added a "Caveats" section: `convert` and `replace` match text, not syntax, and will rewrite matches inside comments and string literals.
 
 - `docs/ARCHITECTURE.md` describes the actual tree: no `reformat.json` at the repository root, tests under each crate, and the `walk`, `lines` and `text` modules.
-
-
 
 **Option assembly is single-sourced**
 
@@ -1168,4 +1164,3 @@ This release represents a major architectural overhaul and feature expansion. Th
 - Glob matching supports both filename and relative path patterns
 
 - Error handling with user-friendly messages
-
