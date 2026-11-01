@@ -235,10 +235,10 @@ impl FileGrouper {
 
             // Move each file to the subdirectory
             for file_path in files {
-                let filename = file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
+                // `analyze_directory` keeps only UTF-8 names.
+                let Some(filename) = file_path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
 
                 // Determine the new filename (with or without prefix)
                 let new_filename = if self.options.strip_prefix {
@@ -250,11 +250,15 @@ impl FileGrouper {
                 let new_path = subdir.join(&new_filename);
 
                 // Check if target already exists
-                if new_path.exists() {
-                    log::warn!(
-                        "Warning: Target file already exists, skipping: {}",
+                // Not following links: a rename would replace a dangling one.
+                if new_path.symlink_metadata().is_ok() {
+                    let message = format!(
+                        "{}: target already exists, not moved: {}",
+                        file_path.display(),
                         new_path.display()
                     );
+                    log::warn!("{}", message);
+                    stats.errors.push(message);
                     continue;
                 }
 
@@ -356,7 +360,17 @@ impl FileGrouper {
             if !dir.is_dir() {
                 continue;
             }
-            let stats = self.process_directory_single(&dir, &path, &mut changes)?;
+            // Earlier directories have already moved files, so returning here
+            // would lose the only record of those moves.
+            let stats = match self.process_directory_single(&dir, &path, &mut changes) {
+                Ok(stats) => stats,
+                Err(e) => {
+                    let message = format!("{}: {}", dir.display(), e);
+                    log::warn!("{}", message);
+                    total_stats.errors.push(message);
+                    continue;
+                }
+            };
             total_stats.dirs_created += stats.dirs_created;
             total_stats.files_moved += stats.files_moved;
             total_stats.files_renamed += stats.files_renamed;
@@ -925,5 +939,24 @@ mod tests {
 
         assert_eq!(stats.files_moved, 0);
         assert!(dir.join("s_1").exists());
+    }
+
+    #[test]
+    fn test_existing_target_is_reported_and_not_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::create_dir(dir.join("a")).unwrap();
+        fs::write(dir.join("a/a_1.txt"), "kept").unwrap();
+        fs::write(dir.join("a_1.txt"), "new").unwrap();
+        fs::write(dir.join("a_2.txt"), "x").unwrap();
+
+        let result = FileGrouper::with_defaults()
+            .process_with_changes(dir)
+            .unwrap();
+
+        assert_eq!(result.stats.files_moved, 1);
+        assert_eq!(result.stats.errors.len(), 1);
+        assert_eq!(fs::read_to_string(dir.join("a/a_1.txt")).unwrap(), "kept");
+        assert!(dir.join("a_1.txt").exists());
     }
 }

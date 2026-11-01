@@ -40,6 +40,8 @@ impl Default for HeaderOptions {
 
 const BOM: &str = "\u{FEFF}";
 
+const PYTHON_EXTENSIONS: &[&str] = &[".py", ".pyx", ".pxd", ".pxi"];
+
 /// File header manager: insert or update headers at the top of source files
 pub struct HeaderManager {
     options: HeaderOptions,
@@ -47,11 +49,16 @@ pub struct HeaderManager {
     resolved_header: String,
     /// Regex to detect if the header (or a year-variant of it) already exists
     header_detector: Option<Regex>,
+    /// A PEP 263 encoding declaration, which must stay on line 1 or 2
+    coding_line: Regex,
 }
 
 impl HeaderManager {
     /// Creates a new header manager with the given options
     pub fn new(options: HeaderOptions) -> crate::Result<Self> {
+        if !options.update_year && options.text.contains("{year}") {
+            anyhow::bail!("header text contains {{year}}, which needs update_year (--update-year)");
+        }
         let resolved_header = if options.update_year {
             let year = chrono::Utc::now().format("%Y").to_string();
             options.text.replace("{year}", &year)
@@ -80,21 +87,39 @@ impl HeaderManager {
             options,
             resolved_header,
             header_detector,
+            coding_line: Regex::new(r"^[ \t\f]*#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+")
+                .expect("coding line pattern is a compile-time constant"),
         })
     }
 
     /// Byte offset at which a header may legitimately begin: the start of the
-    /// file, skipping a shebang line and any leading blank lines.
-    fn header_zone(content: &str) -> usize {
-        let pos = Self::shebang_end(content);
+    /// file, skipping what must stay first and any leading blank lines.
+    fn header_zone(&self, content: &str, file: &FileTarget) -> usize {
+        let pos = self.preamble_end(content, file);
         let rest = &content[pos..];
         let trimmed = rest.trim_start_matches(['\n', '\r', ' ', '\t']);
         pos + (rest.len() - trimmed.len())
     }
 
-    /// Byte offset just past a shebang line and its terminator, or 0.
+    /// Byte offset just past the lines that must stay first: a shebang, and
+    /// in Python an encoding declaration, or 0.
+    fn preamble_end(&self, content: &str, file: &FileTarget) -> usize {
+        if crate::step::matches_extension(&file.path, PYTHON_EXTENSIONS) {
+            let mut pos = 0;
+            for (line, end) in crate::lines::split_lines(content).take(2) {
+                pos += line.len() + end.len();
+                if self.coding_line.is_match(line) {
+                    return pos;
+                }
+            }
+        }
+        Self::shebang_end(content)
+    }
+
+    /// Byte offset just past a shebang line and its terminator, or 0. `#![` is
+    /// a Rust inner attribute, not a shebang.
     fn shebang_end(content: &str) -> usize {
-        if !content.starts_with("#!") {
+        if !content.starts_with("#!") || content.starts_with("#![") {
             return 0;
         }
         crate::lines::split_lines(content)
@@ -130,7 +155,7 @@ impl ContentStep for HeaderManager {
             )
     }
 
-    fn transform(&self, text: &str, _file: &FileTarget) -> Option<(String, usize)> {
+    fn transform(&self, text: &str, file: &FileTarget) -> Option<(String, usize)> {
         // A byte-order mark must stay the first thing in the file.
         let (bom, content) = match text.strip_prefix(BOM) {
             Some(rest) => (BOM, rest),
@@ -143,7 +168,7 @@ impl ContentStep for HeaderManager {
 
         // Detection is anchored to the header zone, so a year-variant string
         // elsewhere in the body is not mistaken for this file's header.
-        let zone = Self::header_zone(content);
+        let zone = self.header_zone(content, file);
         if let Some(ref detector) = self.header_detector {
             if let Some(m) = detector
                 .find_at(content, zone)
@@ -171,7 +196,7 @@ impl ContentStep for HeaderManager {
         }
 
         // Insert after a shebang line, if there is one.
-        let (prefix, rest) = content.split_at(Self::shebang_end(content));
+        let (prefix, rest) = content.split_at(self.preamble_end(content, file));
         let prefix_newline = if !prefix.is_empty() && !prefix.ends_with(['\n', '\r']) {
             newline
         } else {
@@ -583,5 +608,66 @@ mod tests {
         let (out, _) = m.transform("#!/bin/sh\rx\r", &file).unwrap();
         assert_eq!(out, "#!/bin/sh\r# H\r\rx\r");
         assert!(m.transform(&out, &file).is_none());
+    }
+
+    fn insert(text: &str, name: &str, input: &str) -> String {
+        let manager = HeaderManager::new(HeaderOptions {
+            text: text.to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let target = FileTarget::file(Path::new(name));
+        manager.transform(input, &target).unwrap().0
+    }
+
+    #[test]
+    fn test_rust_inner_attribute_is_not_a_shebang() {
+        assert_eq!(
+            insert("// (c) X", "a.rs", "#![allow(dead_code)]\nfn main() {}\n"),
+            "// (c) X\n\n#![allow(dead_code)]\nfn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn test_python_coding_line_stays_on_line_one_or_two() {
+        assert_eq!(
+            insert("# one\n# two", "a.py", "# -*- coding: latin-1 -*-\nx = 1\n"),
+            "# -*- coding: latin-1 -*-\n# one\n# two\n\nx = 1\n"
+        );
+        assert_eq!(
+            insert("# one", "a.py", "#!/bin/sh\n# coding=utf-8\nx = 1\n"),
+            "#!/bin/sh\n# coding=utf-8\n# one\n\nx = 1\n"
+        );
+        // Not Python, and not on line 1 or 2.
+        assert_eq!(
+            insert("// one", "a.c", "# coding: x\n"),
+            "// one\n\n# coding: x\n"
+        );
+        assert_eq!(
+            insert("# one", "a.py", "a = 1\nb = 2\n# coding: x\n"),
+            "# one\n\na = 1\nb = 2\n# coding: x\n"
+        );
+    }
+
+    #[test]
+    fn test_coding_line_header_is_idempotent() {
+        let once = insert("# one", "a.py", "# coding: utf-8\nx = 1\n");
+        let manager = HeaderManager::new(HeaderOptions {
+            text: "# one".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(manager
+            .transform(&once, &FileTarget::file(Path::new("a.py")))
+            .is_none());
+    }
+
+    #[test]
+    fn test_year_placeholder_requires_update_year() {
+        let result = HeaderManager::new(HeaderOptions {
+            text: "// (c) {year} X".to_string(),
+            ..Default::default()
+        });
+        assert!(result.is_err());
     }
 }

@@ -48,7 +48,7 @@ Every command that rewrites contents or names is expressed as a `Preset`: an ord
 
 `execute` does, in order:
 
-1. Validate step names, and check that every path exists. A missing path fails the run before any file changes.
+1. Validate step names, and check that every path exists. A missing path fails the run before any file changes. `preflight` then checks globs, every step's config, `group`'s arguments and record file, and steps that would follow a renamed file.
 
 2. If the run writes and contains `rename`, `group`, `convert` or `replace`, call `dirty::ensure_clean`, which refuses paths with uncommitted changes.
 
@@ -58,9 +58,9 @@ Every command that rewrites contents or names is expressed as a `Preset`: an ord
 
 5. For a content segment: build a `ContentStep` per step, discover files once with `select::discover`, and call `run_content_steps`.
 
-6. For `rename`: discover files, filter by extension, and call `FileRenamer::rename_paths`. For `group`: require one directory, run `FileGrouper::process_with_changes`, and write `changes.json` when writing.
+6. For `rename`: discover files, filter by extension, and call `FileRenamer::rename_paths`. For `group`: run `FileGrouper::process_with_changes`, and write `changes.json` when writing.
 
-`finish` turns the result into the exit status: 2 if any file failed, 1 if `--check` found changes, otherwise 0. `--dry-run`, `--check` and `--diff` all mean "write nothing". `--diff` also prints each change.
+`finish` turns the result into the exit status: 2 if any file or walked entry failed, 1 if `--check` found changes, otherwise 0. `--dry-run`, `--check` and `--diff` all mean "write nothing". `--diff` also prints each change.
 
 ## Content steps
 
@@ -80,7 +80,7 @@ The per-transformer methods (`process`, `clean_file`, `transform_file`, and so o
 
 `select::discover` returns each file at most once, in name order:
 
-- Directories are walked with `ignore::WalkBuilder`. `.gitignore`, `.ignore` and git exclude files apply. Hidden entries are skipped unless `--hidden`. `DEFAULT_SKIP_DIRS` are pruned unless `--no-ignore`.
+- Directories are walked with `ignore::WalkBuilder`. `.gitignore`, `.ignore` and git exclude files apply. Hidden entries are skipped unless `--hidden`. Directories in `DEFAULT_SKIP_DIRS` are pruned unless `--no-ignore`.
 
 - `--include` and `--exclude` become `ignore` overrides. They match relative to the walked directory, or to the working directory for a file named directly.
 
@@ -92,7 +92,7 @@ The per-transformer methods (`process`, `clean_file`, `transform_file`, and so o
 
 These hold for every command. The tests that cover them are named in parentheses.
 
-- **`.git` is never modified.** `select` prunes it. The runner and the renamer refuse any path with a `.git` component, as written or resolved, whatever the flags (`repo_safety.rs`, `test_runner_never_modifies_git_metadata`, `test_rename_paths_selection_and_git_refusal`).
+- **`.git` is never modified.** `select` prunes it. The runner and the renamer refuse any path with a `.git` component, as written or resolved, whatever the flags. A renamed file's new name must be one path component, so a prefix from a preset cannot reach `.git` (`repo_safety.rs`, `test_runner_never_modifies_git_metadata`, `test_rename_paths_selection_and_git_refusal`).
 
 - **No truncated files.** `write_atomic` writes a temporary file in the same directory and renames it over the original. It resolves symlinks first, copies permissions, and writes in place when a file has several hard links (`test_write_atomic_*`).
 
@@ -102,7 +102,7 @@ These hold for every command. The tests that cover them are named in parentheses
 
 - **Binary files are skipped.** A NUL byte marks a file as binary. Files that are not UTF-8 are skipped by every step except `endings`.
 
-- **Destructive runs need a clean tree.** `rename`, `group`, `convert` and `replace` refuse paths git reports as modified, untracked, or ignored where the run reaches them, unless `--allow-dirty`. A git failure other than "not a git repository" refuses the run. Fixes chosen at `group`'s interactive prompt are checked again before they are applied.
+- **Destructive runs need a clean tree.** `rename`, `group`, `convert` and `replace` refuse paths git reports as modified, untracked, or ignored where the run reaches them, unless `--allow-dirty`. Symbolic links are resolved first, and a link from a work tree to a location outside git is refused. A git failure other than "not a git repository" refuses the run. Fixes chosen at `group`'s interactive prompt are checked again before they are applied.
 
 ## Reference fixing
 

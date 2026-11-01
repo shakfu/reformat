@@ -22,31 +22,44 @@ const MAX_PATHSPEC_BYTES: usize = 24_000;
 /// costs a few git calls, not one full status scan per path.
 fn uncommitted(paths: &[PathBuf], walks_ignored: bool) -> anyhow::Result<Vec<String>> {
     let mut batches: BTreeMap<(PathBuf, bool), Vec<PathBuf>> = BTreeMap::new();
+    let mut dirty = Vec::new();
     for path in paths {
-        let Ok(absolute) = std::path::absolute(path) else {
+        let Ok(as_written) = std::path::absolute(path) else {
             continue;
         };
-        let is_dir = absolute.is_dir();
-        let dir = if is_dir {
-            absolute.as_path()
-        } else {
-            absolute.parent().unwrap_or(&absolute)
-        };
-        // Outside any `.git` ancestor, git may still find a repository
-        // through GIT_DIR, so the directory itself is asked.
-        let root = dir
-            .ancestors()
-            .find(|d| d.join(".git").symlink_metadata().is_ok())
-            .unwrap_or(dir)
-            .to_path_buf();
-        let with_ignored = walks_ignored || !is_dir;
-        batches
-            .entry((root, with_ignored))
-            .or_default()
-            .push(absolute);
+        let real = real_path(&as_written);
+        if let Some(real) = &real {
+            if in_work_tree(&as_written) && !in_work_tree(real) {
+                dirty.push(format!(
+                    "!! {} -> {} (outside any git repository)",
+                    path.display(),
+                    real.display()
+                ));
+            }
+        }
+        let entries = checked_entries(&as_written, real);
+        for absolute in entries {
+            let is_dir = absolute.is_dir();
+            let dir = if is_dir {
+                absolute.as_path()
+            } else {
+                absolute.parent().unwrap_or(&absolute)
+            };
+            // Outside any `.git` ancestor, git may still find a repository
+            // through GIT_DIR, so the directory itself is asked.
+            let root = dir
+                .ancestors()
+                .find(|d| d.join(".git").symlink_metadata().is_ok())
+                .unwrap_or(dir)
+                .to_path_buf();
+            let with_ignored = walks_ignored || !is_dir;
+            batches
+                .entry((root, with_ignored))
+                .or_default()
+                .push(absolute);
+        }
     }
 
-    let mut dirty = Vec::new();
     for ((root, with_ignored), specs) in &batches {
         let mut start = 0;
         while start < specs.len() {
@@ -63,6 +76,42 @@ fn uncommitted(paths: &[PathBuf], walks_ignored: bool) -> anyhow::Result<Vec<Str
     dirty.sort();
     dirty.dedup();
     Ok(dirty)
+}
+
+/// `path` with symbolic links resolved. Writes follow links, so git must be
+/// asked about the file that changes, not the link that names it.
+fn real_path(path: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(path).ok()?;
+    // Git does not accept the `\\?\` form that Windows canonicalization returns.
+    #[cfg(windows)]
+    if let Some(plain) = real.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        if !plain.starts_with("UNC\\") {
+            return Some(PathBuf::from(plain));
+        }
+    }
+    Some(real)
+}
+
+/// The paths to ask git about: the resolved file, and a symlink's own entry,
+/// since a rename acts on the link. A path that cannot be resolved is a
+/// dangling link or a missing file, and is checked as written.
+fn checked_entries(as_written: &Path, real: Option<PathBuf>) -> Vec<PathBuf> {
+    let is_link = as_written.is_symlink();
+    let link_entry = as_written.file_name().and_then(|name| {
+        let parent = real_path(as_written.parent()?)?;
+        is_link.then(|| parent.join(name))
+    });
+    let entries: Vec<PathBuf> = real.into_iter().chain(link_entry).collect();
+    if entries.is_empty() {
+        vec![as_written.to_path_buf()]
+    } else {
+        entries
+    }
+}
+
+fn in_work_tree(path: &Path) -> bool {
+    path.ancestors()
+        .any(|d| d.join(".git").symlink_metadata().is_ok())
 }
 
 /// One `git status` call in `root` for `specs`.

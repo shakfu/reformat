@@ -86,7 +86,9 @@ pub fn in_git_dir(path: &Path) -> bool {
 /// enforced by [`is_excluded`].
 pub fn include_entry<S: AsRef<str>>(entry: &DirEntry, skip_dirs: &[S]) -> bool {
     let name = entry.file_name().as_encoded_bytes();
-    let skipped = skip_dirs.iter().any(|d| d.as_ref().as_bytes() == name);
+    // The skip list names directories. A script called `build` is a file.
+    let skipped =
+        entry.file_type().is_dir() && skip_dirs.iter().any(|d| d.as_ref().as_bytes() == name);
     if entry.depth() == 0 {
         // The user named this directory explicitly, so being hidden is not
         // disqualifying -- a project may well live under `~/.config`, and
@@ -95,7 +97,7 @@ pub fn include_entry<S: AsRef<str>>(entry: &DirEntry, skip_dirs: &[S]) -> bool {
         // pointing the renamer at `.git` should not destroy the repository.
         return !skipped;
     }
-    !is_excluded_name(entry.file_name(), skip_dirs)
+    !skipped && !name.starts_with(b".")
 }
 
 /// Iterator over the files under `root`, pruning hidden and build directories.

@@ -55,7 +55,7 @@ impl Default for EndingsOptions {
             file_extensions: vec![
                 ".py", ".pyx", ".pxd", ".pxi", ".c", ".h", ".cpp", ".hpp", ".rs", ".go", ".java",
                 ".js", ".ts", ".jsx", ".tsx", ".md", ".qmd", ".txt", ".toml", ".yaml", ".yml",
-                ".json", ".xml", ".html", ".css", ".sh", ".bat",
+                ".json", ".xml", ".html", ".css", ".sh",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -387,5 +387,12 @@ mod tests {
         assert_eq!(LineEnding::parse("cr"), Some(LineEnding::Cr));
         assert_eq!(LineEnding::parse("mac"), Some(LineEnding::Cr));
         assert_eq!(LineEnding::parse("bogus"), None);
+    }
+
+    /// `cmd.exe` can misread labels in a batch file with LF endings.
+    #[test]
+    fn test_batch_files_are_not_a_default() {
+        let step = EndingsNormalizer::with_defaults();
+        assert!(!step.accepts(&FileTarget::file(Path::new("a.bat"))));
     }
 }

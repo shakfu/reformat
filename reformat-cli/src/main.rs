@@ -701,6 +701,8 @@ impl StepOutcome {
 struct Execution {
     outcomes: Vec<(String, StepOutcome)>,
     errors: Vec<String>,
+    /// Files that at least one content step read.
+    examined: usize,
 }
 
 /// The paths, flags and file selection a command runs with.
@@ -872,6 +874,67 @@ fn print_diff(path: &Path, before: &[u8], after: &[u8]) -> io::Result<()> {
     write_stdout(text.as_bytes())
 }
 
+/// Checks everything that can fail before the first step writes, so a bad
+/// config or argument cannot leave a pipeline half applied. Returns where
+/// `group` will record its moves, if it will.
+fn preflight(
+    label: &str,
+    preset: &Preset,
+    inv: &Invocation,
+    dry_run: bool,
+) -> anyhow::Result<Option<PathBuf>> {
+    inv.select.selection().validate()?;
+    let steps = &preset.steps;
+    // A rename changes the paths later steps would be given. A directory
+    // keeps its name, so only a file named directly is affected.
+    if let Some(pos) = steps.iter().position(|s| s == "rename") {
+        if pos + 1 < steps.len() {
+            if let Some(file) = inv.paths.iter().find(|p| !p.is_dir()) {
+                anyhow::bail!(
+                    "{}: steps after rename cannot follow a file named directly ('{}'). \
+                     Name its directory instead.",
+                    label,
+                    file.display()
+                );
+            }
+        }
+    }
+    for step in steps {
+        match step.as_str() {
+            "rename" => {
+                preset
+                    .rename
+                    .clone()
+                    .unwrap_or_default()
+                    .to_options(dry_run)?;
+            }
+            "group" => {
+                preset
+                    .group
+                    .clone()
+                    .unwrap_or_default()
+                    .to_options(dry_run)?;
+            }
+            name => {
+                build_content_step(preset, name, dry_run, label)?;
+            }
+        }
+    }
+    if !steps.iter().any(|s| s == "group") {
+        return Ok(None);
+    }
+    if !matches!(inv.paths, [path] if path.is_dir()) {
+        anyhow::bail!(
+            "{}: the group step takes exactly one directory, got {} path(s)",
+            label,
+            inv.paths.len()
+        );
+    }
+    (!dry_run)
+        .then(|| resolve_record_path(None, "changes.json"))
+        .transpose()
+}
+
 /// Runs every step of `preset` over the invocation's paths.
 ///
 /// Consecutive content steps share one pass: each file is read once, every
@@ -900,9 +963,11 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
     }
     let selection = inv.select.selection();
     let dry_run = !inv.flags.writes();
+    let group_record = preflight(label, &preset, inv, dry_run)?;
     let mut exec = Execution {
         outcomes: Vec::new(),
         errors: Vec::new(),
+        examined: 0,
     };
 
     let steps = &preset.steps;
@@ -915,16 +980,18 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
             let cfg = preset.rename.clone().unwrap_or_default();
             let options = cfg.to_options(dry_run)?;
             let extensions = cfg.file_extensions.clone().unwrap_or_default();
-            let files = select::discover(
+            let (found, walk_errors) = select::discover(
                 inv.paths,
                 &selection,
                 options.recursive,
                 options.include_symlinks,
-            )?
-            .into_iter()
-            .filter(|f| reformat_core::step::matches_extension(&f.target.path, &extensions))
-            .map(|f| (f.target.path, f.is_symlink))
-            .collect();
+            )?;
+            exec.errors.extend(walk_errors);
+            let files = found
+                .into_iter()
+                .filter(|f| reformat_core::step::matches_extension(&f.target.path, &extensions))
+                .map(|f| (f.target.path, f.is_symlink))
+                .collect();
             let stats = FileRenamer::new(options).rename_paths(files);
             exec.errors.extend(stats.errors.iter().cloned());
             exec.outcomes
@@ -934,24 +1001,16 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
         }
 
         if step == "group" {
-            let [path] = inv.paths else {
-                anyhow::bail!(
-                    "{}: the group step takes exactly one directory, got {} paths",
-                    label,
-                    inv.paths.len()
-                );
-            };
+            let path = &inv.paths[0];
             let cfg = preset.group.clone().unwrap_or_default();
-            let changes_path = (!dry_run)
-                .then(|| resolve_record_path(None, "changes.json"))
-                .transpose()?;
+            let changes_path = group_record.clone();
             let options = cfg.to_options(dry_run)?;
             let recursive = options.recursive;
             let result = group_selected(FileGrouper::new(options), path, recursive)?
                 .process_with_changes(path)?;
             exec.errors.extend(result.stats.errors.iter().cloned());
             if let Some(changes_path) = changes_path.filter(|_| !result.changes.is_empty()) {
-                result.changes.write_to_file(&changes_path)?;
+                save_changes(&result.changes, &changes_path)?;
                 info!("Changes recorded to: {}", changes_path.display());
             }
             exec.outcomes
@@ -972,9 +1031,10 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
         let refs: Vec<&dyn ContentStep> = built.iter().map(|b| b.as_ref()).collect();
 
         let recursive = names.iter().any(|name| step_recursive(&preset, name));
-        let files = select::discover(inv.paths, &selection, recursive, false)?
-            .into_iter()
-            .map(|f| f.target);
+        let (found, walk_errors) = select::discover(inv.paths, &selection, recursive, false)?;
+        exec.errors.extend(walk_errors);
+        let files: Vec<FileTarget> = found.into_iter().map(|f| f.target).collect();
+        warn_unprocessed(&files, &refs);
 
         let show_diff = inv.flags.diff;
         let mut diff_error = None;
@@ -997,12 +1057,31 @@ fn execute(label: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result<Exe
                 },
             ));
         }
+        exec.examined += report.files_examined;
         exec.errors.extend(report.errors);
         exec.errors.extend(editorconfig::take_errors());
         i = end;
     }
 
     Ok(exec)
+}
+
+/// Warns about files the user named that no step will read. Without this, the
+/// run reports them as needing no changes. One line, since a hook may pass
+/// many such files.
+fn warn_unprocessed(files: &[FileTarget], steps: &[&dyn ContentStep]) {
+    let unprocessed: Vec<&FileTarget> = files
+        .iter()
+        .filter(|f| f.depth == 0 && !steps.iter().any(|s| s.accepts(f)))
+        .collect();
+    if let Some(first) = unprocessed.first() {
+        warn!(
+            "{} named file(s) not processed: no step applies (first: {}). \
+             Select them with -e or --include.",
+            unprocessed.len(),
+            first.path.display()
+        );
+    }
 }
 
 /// Converts an execution into the process outcome: an error if any file
@@ -1051,6 +1130,10 @@ fn run_single_step(
 
     if outcome.files() > 0 {
         info!("{}{}", common.run.prefix(), summary(outcome));
+    } else if !exec.errors.is_empty() {
+        // The error from `finish` is the summary: "nothing needed" would be false.
+    } else if matches!(outcome, StepOutcome::Counted { .. }) {
+        info!("{} ({} file(s) examined)", empty, exec.examined);
     } else {
         info!("{}", empty);
     }
@@ -1086,13 +1169,15 @@ fn run_pipeline(name: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result
     let exec = execute(name, preset, inv)?;
     let flags = inv.flags;
     let prefix = flags.prefix();
+    // With errors, "nothing to do" and "complete" would be false.
+    let succeeded = exec.errors.is_empty();
 
     for (step, outcome) in &exec.outcomes {
         match outcome {
             StepOutcome::Renamed(stats) => {
                 if stats.renamed > 0 {
                     info!("{}  rename: {} file(s) renamed", prefix, stats.renamed);
-                } else {
+                } else if succeeded {
                     info!("  rename: no files needed renaming");
                 }
                 if stats.skipped > 0 {
@@ -1108,7 +1193,7 @@ fn run_pipeline(name: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result
                         "{}  group: {} dir(s) created, {} file(s) moved",
                         prefix, stats.dirs_created, stats.files_moved
                     );
-                } else {
+                } else if succeeded {
                     info!("  group: no files needed grouping");
                 }
             }
@@ -1118,14 +1203,17 @@ fn run_pipeline(name: &str, preset: &Preset, inv: &Invocation) -> anyhow::Result
                         "{}  {}: {} file(s), {} change(s)",
                         prefix, step, files, units
                     );
-                } else {
+                } else if succeeded {
                     info!("  {}: nothing to do", step);
                 }
             }
         }
     }
 
-    info!("Pipeline '{}' complete.", name);
+    if succeeded {
+        info!("{} file(s) examined.", exec.examined);
+        info!("Pipeline '{}' complete.", name);
+    }
     finish(&exec, flags)
 }
 
@@ -1225,8 +1313,11 @@ fn run_default(recursive: bool, inv: &Invocation) -> anyhow::Result<bool> {
                 clean_files, clean_lines
             );
         }
-    } else {
-        info!("No files needed processing");
+    } else if exec.errors.is_empty() {
+        info!(
+            "No files needed processing ({} file(s) examined)",
+            exec.examined
+        );
     }
     finish(&exec, flags)
 }
@@ -1247,8 +1338,10 @@ fn group_selected(
         );
     }
     let selection = select::Selection::default();
+    // A directory the walk cannot read fails later, when `group` reads it.
     let keep: std::collections::HashSet<PathBuf> =
         select::discover(&[path.to_path_buf()], &selection, recursive, false)?
+            .0
             .into_iter()
             .filter_map(|f| f.target.path.canonicalize().ok())
             .collect();
@@ -1270,6 +1363,21 @@ fn resolve_record_path(explicit: Option<PathBuf>, default_name: &str) -> anyhow:
         );
     }
     Ok(path)
+}
+
+/// Writes the record of moves that have already happened. If that fails, the
+/// record goes to stderr, since nothing else holds it.
+fn save_changes(changes: &reformat_core::ChangeRecord, path: &Path) -> anyhow::Result<()> {
+    changes.write_to_file(path).map_err(|e| {
+        if let Ok(json) = serde_json::to_string_pretty(changes) {
+            eprintln!("{}", json);
+        }
+        anyhow::anyhow!(
+            "files were moved, but {} could not be written ({}). The record is printed above.",
+            path.display(),
+            e
+        )
+    })
 }
 
 /// Prompts the user for a yes/no answer
@@ -1460,7 +1568,9 @@ fn run_group(
     let stats = &result.stats;
 
     if stats.files_moved == 0 {
-        info!("No files needed grouping");
+        if failed == 0 {
+            info!("No files needed grouping");
+        }
         return done(false);
     }
 
@@ -1487,7 +1597,7 @@ fn run_group(
         return done(false);
     }
 
-    result.changes.write_to_file(&changes_path)?;
+    save_changes(&result.changes, &changes_path)?;
     info!("\nChanges recorded to: {}", changes_path.display());
 
     let dirs_to_scan = if !no_interactive {

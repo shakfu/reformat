@@ -2029,3 +2029,141 @@ fn test_rename_collision_exits_2() {
     }
     assert!(tmp.path().join("a_b.txt").exists());
 }
+
+/// Writes a preset named `p` into `dir`.
+fn write_preset(dir: &std::path::Path, body: &str) {
+    fs::write(dir.join("reformat.json"), format!(r#"{{"p": {body}}}"#)).unwrap();
+}
+
+#[test]
+fn test_cli_pipeline_refuses_steps_after_renaming_a_named_file() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("a.txt"), "x  \n").unwrap();
+    write_preset(
+        dir,
+        r#"{"steps": ["rename", "clean"], "rename": {"add_prefix": "z_"}}"#,
+    );
+
+    let output = run(dir, &["-p", "p", "a.txt"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(dir.join("a.txt").exists(), "nothing may have been renamed");
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "x  \n");
+}
+
+#[test]
+fn test_cli_pipeline_checks_existing_record_before_any_step_writes() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("a_1.txt"), "x  \n").unwrap();
+    fs::write(dir.join("a_2.txt"), "x\n").unwrap();
+    fs::write(dir.join("changes.json"), "{}").unwrap();
+    write_preset(dir, r#"{"steps": ["clean", "group"]}"#);
+
+    let output = run(dir, &["-p", "p", "."]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(dir.join("a_1.txt")).unwrap(), "x  \n");
+}
+
+#[test]
+fn test_cli_pipeline_checks_later_step_config_before_any_step_writes() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("a.txt"), "x  \n").unwrap();
+    write_preset(dir, r#"{"steps": ["clean", "rename", "replace"]}"#);
+
+    let output = run(dir, &["-p", "p", "."]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "x  \n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_check_fails_on_an_unreadable_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("u")).unwrap();
+    fs::write(dir.join("u/a.txt"), "x  \n").unwrap();
+    let locked = dir.join("u");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&locked).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return; // Running as root: permissions do not apply.
+    }
+
+    let output = run(dir, &["clean", "--check", "."]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn test_cli_warns_when_a_named_file_is_not_processed() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("Makefile"), "x  \n").unwrap();
+    fs::write(dir.join(".env"), "x  \n").unwrap();
+
+    let output = run(dir, &["clean", "--check", "Makefile"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("not processed"), "{stdout}");
+    assert!(stdout.contains("0 file(s) examined"), "{stdout}");
+
+    let output = run(dir, &["clean", "--check", ".env"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--hidden"), "{stdout}");
+}
+
+#[test]
+fn test_cli_group_fails_when_a_target_exists() {
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::create_dir(dir.join("a")).unwrap();
+    fs::write(dir.join("a/a_1.txt"), "kept").unwrap();
+    fs::write(dir.join("a_1.txt"), "x").unwrap();
+    fs::write(dir.join("a_2.txt"), "x").unwrap();
+
+    let output = run(dir, &["group", ".", "--no-interactive"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(dir.join("a/a_2.txt").exists());
+    assert!(fs::read_to_string(dir.join("changes.json"))
+        .unwrap()
+        .contains("a_2.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_failed_runs_do_not_report_success() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = fixture();
+    let dir = tmp.path();
+    fs::write(dir.join("ro.txt"), "x  \n").unwrap();
+    fs::set_permissions(dir.join("ro.txt"), fs::Permissions::from_mode(0o444)).unwrap();
+    if fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("ro.txt"))
+        .is_ok()
+    {
+        return; // Running as root: permissions do not apply.
+    }
+    write_preset(dir, r#"{"steps": ["clean"]}"#);
+
+    for args in [
+        &["clean", "ro.txt"][..],
+        &["ro.txt"][..],
+        &["-p", "p", "ro.txt"][..],
+    ] {
+        let output = run(dir, args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        for claim in ["Cleaned", "No files needed", "nothing to do", "complete."] {
+            assert!(!stdout.contains(claim), "{args:?}: {stdout}");
+        }
+    }
+    assert_eq!(fs::read_to_string(dir.join("ro.txt")).unwrap(), "x  \n");
+}

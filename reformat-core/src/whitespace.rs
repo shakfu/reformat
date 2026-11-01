@@ -101,7 +101,9 @@ impl ContentStep for WhitespaceCleaner {
         // Each line keeps its own terminator, so a CRLF file stays CRLF.
         let mut lines: Vec<(Cow<str>, &str, bool)> = Vec::new();
         for (body, terminator) in crate::lines::split_lines(text) {
-            let cleaned = match body.trim_end() {
+            // Spaces and tabs only: a form feed is a page break, and an NBSP
+            // may be deliberate.
+            let cleaned = match body.trim_end_matches([' ', '\t']) {
                 _ if !self.options.remove_trailing => Cow::Borrowed(body),
                 t if keep_breaks && !t.is_empty() && body.ends_with("  ") => {
                     Cow::Owned(format!("{t}  "))
@@ -117,7 +119,7 @@ impl ContentStep for WhitespaceCleaner {
             // A line already counted as cleaned is not counted again.
             while lines
                 .last()
-                .is_some_and(|(body, _, _)| body.trim().is_empty())
+                .is_some_and(|(body, _, _)| body.trim_matches([' ', '\t']).is_empty())
             {
                 let (_, _, was_cleaned) = lines.pop().unwrap();
                 changed += usize::from(!was_cleaned);
@@ -476,5 +478,18 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(cleaner.process(tmp.path()).unwrap(), (1, 1));
+    }
+
+    #[test]
+    fn test_only_spaces_and_tabs_are_trailing_whitespace() {
+        let cleaner = WhitespaceCleaner::new(WhitespaceOptions {
+            trim_trailing_blank_lines: true,
+            ..Default::default()
+        });
+        let file = FileTarget::file(Path::new("a.c"));
+        assert!(cleaner.transform("a\n\u{c}\nb\n", &file).is_none());
+        assert!(cleaner.transform("a\u{a0}\n", &file).is_none());
+        assert_eq!(cleaner.transform("a \t\n", &file).unwrap().0, "a\n");
+        assert_eq!(cleaner.transform("a\n\u{c}\n", &file), None);
     }
 }

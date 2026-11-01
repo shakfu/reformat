@@ -389,7 +389,7 @@ To run reformat from [pre-commit](https://pre-commit.com), install the binary (`
 ```yaml
 repos:
   - repo: https://github.com/shakfu/reformat
-    rev: v0.4.0
+    rev: 0.4.0
     hooks:
 
       - id: reformat-clean         # trailing whitespace, final newline, trailing blank lines

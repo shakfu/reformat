@@ -4,7 +4,7 @@
 //! moved/renamed files and generate fixes for those references.
 
 use crate::changes::{to_slash, ChangeRecord};
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, MatchKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -263,7 +263,12 @@ impl ReferenceScanner {
         patterns.sort();
 
         // Aho-Corasick gives O(n) multi-pattern matching over each file.
-        let automaton = AhoCorasick::new(&patterns)
+        // Leftmost-longest: standard semantics report `a.txt` inside
+        // `a.txt.bak`, the standalone check rejects it, and the scan has by
+        // then passed `a.txt.bak`, which is a reference of its own.
+        let automaton = AhoCorasick::builder()
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&patterns)
             .map_err(|e| anyhow::anyhow!("failed to build reference matcher: {}", e))?;
 
         Ok(ReferenceScanner {
@@ -1117,5 +1122,28 @@ template: old_file.tmpl
             .fixes;
         assert_eq!(fixes.len(), 1, "{:?}", fixes);
         assert_eq!(fixes[0].column, 6);
+    }
+
+    /// `a_x.txt.bak` must not be lost to the shorter moved name it contains.
+    #[test]
+    fn test_scan_finds_a_name_that_extends_another_moved_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("m.py"),
+            "open(\"a_x.txt.bak\")\nopen(\"a_x.txt\")\n",
+        )
+        .unwrap();
+        let moves = HashMap::from([
+            ("a_x.txt".to_string(), "a/a_x.txt".to_string()),
+            ("a_x.txt.bak".to_string(), "a/a_x.txt.bak".to_string()),
+        ]);
+        let scanner = ReferenceScanner::new(moves, ScanOptions::default()).unwrap();
+        let record = scanner.scan(&[tmp.path().to_path_buf()]).unwrap();
+        let found: Vec<(usize, &str)> = record
+            .fixes
+            .iter()
+            .map(|f| (f.line, f.old_reference.as_str()))
+            .collect();
+        assert_eq!(found, [(1, "a_x.txt.bak"), (2, "a_x.txt")]);
     }
 }

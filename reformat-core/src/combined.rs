@@ -100,9 +100,9 @@ impl CombinedProcessor {
         let mut stats = CombinedStats::default();
 
         if path.is_file() {
-            let skipped = path.file_name().and_then(|n| n.to_str()).is_none_or(|n| {
-                crate::walk::is_excluded_component(n, crate::walk::DEFAULT_SKIP_DIRS)
-            });
+            let skipped = path
+                .file_name()
+                .is_none_or(|n| crate::walk::is_excluded_name(n, &[] as &[&str]));
             if !skipped {
                 self.process_single_file(path, &mut stats)?;
             }

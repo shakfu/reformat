@@ -61,13 +61,12 @@ impl Default for EmojiOptions {
         EmojiOptions {
             replace_task_emojis: true,
             remove_other_emojis: true,
-            file_extensions: vec![
-                ".md", ".txt", ".rst", ".org", ".py", ".rs", ".go", ".java", ".js", ".ts", ".jsx",
-                ".tsx", ".c", ".h", ".cpp", ".hpp",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            // Prose only. In source code an emoji may sit in a string literal,
+            // where removing it changes behaviour. `-e` opts in.
+            file_extensions: [".md", ".txt", ".rst", ".org"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             recursive: true,
             dry_run: false,
         }
@@ -661,5 +660,13 @@ mod tests {
                 "Yellow circle emoji should be removed"
             );
         }
+    }
+
+    #[test]
+    fn test_default_extensions_are_prose_only() {
+        let step = EmojiTransformer::with_defaults();
+        let accepts = |name: &str| step.accepts(&FileTarget::file(Path::new(name)));
+        assert!(accepts("a.md") && accepts("a.txt") && accepts("a.rst") && accepts("a.org"));
+        assert!(!accepts("a.py") && !accepts("a.rs") && !accepts("a.js"));
     }
 }

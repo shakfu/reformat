@@ -31,6 +31,11 @@ pub struct Found {
 }
 
 impl Selection {
+    /// Fails if a glob is invalid.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.overrides(Path::new(".")).map(|_| ())
+    }
+
     fn overrides(&self, root: &Path) -> anyhow::Result<Override> {
         let mut builder = OverrideBuilder::new(root);
         for glob in &self.include {
@@ -49,7 +54,9 @@ fn is_hidden_name(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with('.'))
 }
 
-/// Returns the files under `paths`, each at most once, in a stable order.
+/// Returns the files under `paths`, each at most once, in a stable order, and
+/// one message per entry the walk could not read. The caller decides how those
+/// fail the run: a `--check` that skipped an unreadable directory must not pass.
 ///
 /// Every path must exist; this is checked before anything is returned, so a
 /// typo in the last argument cannot leave the earlier ones half-processed.
@@ -58,7 +65,7 @@ pub fn discover(
     selection: &Selection,
     recursive: bool,
     include_symlinks: bool,
-) -> anyhow::Result<Vec<Found>> {
+) -> anyhow::Result<(Vec<Found>, Vec<String>)> {
     for path in paths {
         if fs::symlink_metadata(path).is_err() {
             anyhow::bail!("path '{}' does not exist", path.display());
@@ -67,6 +74,7 @@ pub fn discover(
 
     let mut seen = HashSet::new();
     let mut found = Vec::new();
+    let mut errors = Vec::new();
 
     for root in paths {
         if reformat_core::walk::in_git_dir(root) {
@@ -75,11 +83,18 @@ pub fn discover(
         }
 
         if root.is_dir() {
-            walk_dir(root, selection, recursive, include_symlinks, &mut |f| {
-                if seen.insert(std::path::absolute(&f.target.path).unwrap_or_default()) {
-                    found.push(f);
-                }
-            })?;
+            walk_dir(
+                root,
+                selection,
+                recursive,
+                include_symlinks,
+                &mut errors,
+                &mut |f| {
+                    if seen.insert(std::path::absolute(&f.target.path).unwrap_or_default()) {
+                        found.push(f);
+                    }
+                },
+            )?;
             continue;
         }
 
@@ -88,6 +103,9 @@ pub fn discover(
             continue;
         }
         if !named_file_selected(root, selection)? {
+            if is_hidden_name(root) && !selection.hidden {
+                log::warn!("Skipping hidden file '{}': pass --hidden", root.display());
+            }
             continue;
         }
         let absolute = std::path::absolute(root)?;
@@ -99,7 +117,7 @@ pub fn discover(
         }
     }
 
-    Ok(found)
+    Ok((found, errors))
 }
 
 /// Whether a file named directly passes `--hidden`, `--include` and
@@ -135,6 +153,7 @@ fn walk_dir(
     selection: &Selection,
     recursive: bool,
     include_symlinks: bool,
+    errors: &mut Vec<String>,
     emit: &mut dyn FnMut(Found),
 ) -> anyhow::Result<()> {
     // The walker never filters its root, so refuse skipped roots here.
@@ -160,7 +179,12 @@ fn walk_dir(
         .sort_by_file_name(|a, b| a.cmp(b))
         .filter_entry(move |entry| match entry.file_name().to_str() {
             Some(".git") => false,
-            Some(name) => !honour_ignores || !DEFAULT_SKIP_DIRS.contains(&name),
+            // The skip list names directories. A script called `build` is a file.
+            Some(name) => {
+                !honour_ignores
+                    || !entry.file_type().is_some_and(|t| t.is_dir())
+                    || !DEFAULT_SKIP_DIRS.contains(&name)
+            }
             None => false,
         })
         .build();
@@ -169,7 +193,8 @@ fn walk_dir(
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                log::warn!("{}", e);
+                log::error!("{}", e);
+                errors.push(e.to_string());
                 continue;
             }
         };
@@ -237,7 +262,8 @@ mod tests {
             true,
             false,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(names(&found, tmp.path()), ["a.rs", "sub/b.rs"]);
     }
 
@@ -249,7 +275,9 @@ mod tests {
             no_ignore: true,
             ..Default::default()
         };
-        let found = discover(&[tmp.path().to_path_buf()], &selection, true, false).unwrap();
+        let found = discover(&[tmp.path().to_path_buf()], &selection, true, false)
+            .unwrap()
+            .0;
         assert_eq!(
             names(&found, tmp.path()),
             [".github/ci.yml", "a.rs", "node_modules/x.js"]
@@ -264,7 +292,9 @@ mod tests {
             exclude: vec!["vendor/".into()],
             ..Default::default()
         };
-        let found = discover(&[tmp.path().to_path_buf()], &selection, true, false).unwrap();
+        let found = discover(&[tmp.path().to_path_buf()], &selection, true, false)
+            .unwrap()
+            .0;
         assert_eq!(names(&found, tmp.path()), ["Makefile", "a.rs"]);
     }
 
@@ -275,14 +305,16 @@ mod tests {
         fs::write(tmp.path().join(".gitignore"), "generated.rs\n").unwrap();
 
         let root = [tmp.path().to_path_buf()];
-        let found = discover(&root, &Selection::default(), true, false).unwrap();
+        let found = discover(&root, &Selection::default(), true, false)
+            .unwrap()
+            .0;
         assert_eq!(names(&found, tmp.path()), ["keep.rs"]);
 
         let no_ignore = Selection {
             no_ignore: true,
             ..Default::default()
         };
-        let found = discover(&root, &no_ignore, true, false).unwrap();
+        let found = discover(&root, &no_ignore, true, false).unwrap().0;
         assert_eq!(names(&found, tmp.path()), ["generated.rs", "keep.rs"]);
     }
 
@@ -290,7 +322,9 @@ mod tests {
     fn test_non_recursive_and_duplicates() {
         let tmp = tree(&["a.rs", "sub/b.rs"]);
         let paths = [tmp.path().to_path_buf(), tmp.path().join("a.rs")];
-        let found = discover(&paths, &Selection::default(), false, false).unwrap();
+        let found = discover(&paths, &Selection::default(), false, false)
+            .unwrap()
+            .0;
         assert_eq!(names(&found, tmp.path()), ["a.rs"]);
     }
 
@@ -324,7 +358,34 @@ mod tests {
             exclude: vec!["a.rs".into()],
             ..Default::default()
         };
-        let found = discover(&paths, &selection, true, false).unwrap();
+        let found = discover(&paths, &selection, true, false).unwrap().0;
         assert!(found.is_empty(), "got {:?}", names(&found, tmp.path()));
+    }
+
+    #[test]
+    fn test_skip_list_names_directories_not_files() {
+        let tmp = tree(&["build", "dist/x.rs", "a.rs"]);
+        let root = [tmp.path().to_path_buf()];
+        let (found, _) = discover(&root, &Selection::default(), true, false).unwrap();
+        assert_eq!(names(&found, tmp.path()), ["a.rs", "build"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_unreadable_directory_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tree(&["u/a.rs", "b.rs"]);
+        let locked = tmp.path().join("u");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let root = [tmp.path().to_path_buf()];
+        let result = discover(&root, &Selection::default(), true, false);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let (found, errors) = result.unwrap();
+        assert_eq!(names(&found, tmp.path()), ["b.rs"]);
+        assert_eq!(errors.len(), 1, "{errors:?}");
     }
 }

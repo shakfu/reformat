@@ -76,6 +76,11 @@ pub fn validate_steps(preset_name: &str, steps: &[String]) -> crate::Result<()> 
             );
         }
     }
+    // Each group step records its moves in the same file, so a second one
+    // always fails after the first has moved files.
+    if steps.iter().filter(|s| *s == "group").count() > 1 {
+        anyhow::bail!("preset '{}': only one group step is allowed", preset_name);
+    }
     Ok(())
 }
 
@@ -805,5 +810,11 @@ mod tests {
             "the unknown key should be named in the error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_only_one_group_step_is_allowed() {
+        let steps = vec!["group".to_string(), "group".to_string()];
+        assert!(validate_steps("p", &steps).is_err());
     }
 }

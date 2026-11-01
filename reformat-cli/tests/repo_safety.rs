@@ -648,3 +648,206 @@ fn test_guard_checks_each_repository_and_literal_names() {
         "Title\n"
     );
 }
+
+fn commit_all(dir: &Path) {
+    assert!(git(dir, &["add", "."]), "git add failed");
+    assert!(
+        git(
+            dir,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "more",
+            ],
+        ),
+        "git commit failed"
+    );
+}
+
+/// A preset arrives with the repository, so it must not be able to install a
+/// tracked script as a git hook.
+#[test]
+fn test_rename_preset_cannot_move_files_into_git() {
+    if !git_available() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::write(dir.join("pre-commit"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        dir.join("reformat.json"),
+        r#"{"fmt": {"steps": ["rename"], "rename": {"add_prefix": ".git/hooks/"}}}"#,
+    )
+    .unwrap();
+    commit_all(dir);
+
+    let output = Command::new(binary())
+        .args(["-p", "fmt", "pre-commit"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!dir.join(".git/hooks/pre-commit").exists());
+    assert!(dir.join("pre-commit").exists());
+}
+
+#[test]
+fn test_rename_flags_cannot_leave_the_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir(dir.join("s")).unwrap();
+    std::fs::write(dir.join("s/a.txt"), "x").unwrap();
+
+    let output = Command::new(binary())
+        .args(["rename_files", "--add-prefix", "../", "s"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(dir.join("s/a.txt").exists());
+    assert!(!dir.join("a.txt").exists());
+}
+
+/// Runs `replace old -> new` on `target` from `dir`.
+#[cfg(unix)]
+fn replace_old(dir: &Path, target: &str, extra: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(["replace", "--find", "old", "--replace-with", "new"])
+        .args(extra)
+        .arg(target)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+/// Writes follow symbolic links, so the guard must check where they lead.
+#[cfg(unix)]
+#[test]
+fn test_guard_follows_symlinks_into_another_repository() {
+    use std::os::unix::fs::symlink;
+    if !git_available() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    for repo in [&a, &b] {
+        std::fs::create_dir(repo).unwrap();
+        init_repo(repo);
+    }
+    std::fs::create_dir(b.join("sub")).unwrap();
+    std::fs::write(b.join("sub/f.txt"), "old\n").unwrap();
+    commit_all(&b);
+    std::fs::write(b.join("sub/f.txt"), "old mine\n").unwrap();
+    std::fs::write(b.join("untracked.txt"), "old\n").unwrap();
+    symlink(b.join("sub"), a.join("dirlink")).unwrap();
+    symlink(b.join("untracked.txt"), a.join("filelink.txt")).unwrap();
+    commit_all(&a);
+
+    let output = replace_old(&a, "dirlink", &[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(b.join("sub/f.txt")).unwrap(),
+        "old mine\n"
+    );
+
+    let output = replace_old(&a, "filelink.txt", &[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(b.join("untracked.txt")).unwrap(),
+        "old\n"
+    );
+
+    let output = replace_old(&a, "dirlink", &["--allow-dirty"]);
+    assert!(output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(b.join("sub/f.txt")).unwrap(),
+        "new mine\n"
+    );
+}
+
+/// A link that leaves the work tree for a plain directory reaches files git
+/// cannot restore.
+#[cfg(unix)]
+#[test]
+fn test_guard_refuses_symlink_out_of_the_work_tree() {
+    if !git_available() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, plain) = (tmp.path().join("repo"), tmp.path().join("plain"));
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&plain).unwrap();
+    init_repo(&repo);
+    std::fs::write(plain.join("f.txt"), "old\n").unwrap();
+    std::os::unix::fs::symlink(&plain, repo.join("link")).unwrap();
+    commit_all(&repo);
+
+    let output = replace_old(&repo, "link", &[]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("outside any git repository"));
+    assert_eq!(
+        std::fs::read_to_string(plain.join("f.txt")).unwrap(),
+        "old\n"
+    );
+}
+
+/// A clean tracked symlink to a clean file is not a reason to refuse.
+#[cfg(unix)]
+#[test]
+fn test_guard_accepts_clean_symlink_inside_the_repository() {
+    if !git_available() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo(dir);
+    std::fs::write(dir.join("f.txt"), "old\n").unwrap();
+    std::os::unix::fs::symlink("f.txt", dir.join("link.txt")).unwrap();
+    commit_all(dir);
+
+    let output = replace_old(dir, "link.txt", &[]);
+
+    assert!(output.status.success());
+    assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "new\n");
+}
+
+/// A directory that cannot be read must not cost the record of earlier moves.
+#[cfg(unix)]
+#[test]
+fn test_group_keeps_record_when_a_directory_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::create_dir_all(dir.join("z/y")).unwrap();
+    std::fs::create_dir(dir.join("a")).unwrap();
+    for f in ["z/y/q_1.txt", "z/y/q_2.txt", "a/r_1.txt", "a/r_2.txt"] {
+        std::fs::write(dir.join(f), "x").unwrap();
+    }
+    let locked = dir.join("a");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        // Running as root: permissions do not apply.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let output = Command::new(binary())
+        .args(["group", ".", "-r", "--no-interactive"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(dir.join("z/y/q/q_1.txt").exists());
+    let record = std::fs::read_to_string(dir.join("changes.json")).unwrap();
+    assert!(record.contains("q_1.txt"), "{record}");
+}

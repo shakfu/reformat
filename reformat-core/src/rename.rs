@@ -139,11 +139,11 @@ impl FileRenamer {
             return false;
         }
 
-        // Hidden and build-directory names, unless the caller selected them.
+        // Hidden names, unless the caller selected them.
         if skip_hidden
             && path
                 .file_name()
-                .is_none_or(|n| crate::walk::is_excluded_name(n, crate::walk::DEFAULT_SKIP_DIRS))
+                .is_none_or(|n| crate::walk::is_excluded_name(n, &[] as &[&str]))
         {
             return false;
         }
@@ -286,7 +286,10 @@ impl FileRenamer {
 
         // 9. Add suffix (before extension)
         if let Some(suffix) = &self.options.add_suffix {
-            result = format!("{}{}", result, suffix);
+            // Added once, as the prefix is.
+            if !result.ends_with(suffix.as_str()) {
+                result = format!("{}{}", result, suffix);
+            }
         }
 
         // 10. Add extension back
@@ -322,14 +325,21 @@ impl FileRenamer {
         // Get timestamp if needed (with detected separator)
         let timestamp = self.format_timestamp(path, separator);
 
-        let new_name = format!(
-            "{hidden}{}",
-            self.transform_name(name, extension, timestamp)
-        );
+        let transformed = self.transform_name(name, extension, timestamp);
+        let new_name = format!("{hidden}{transformed}");
 
         if new_name == file_name {
             return Ok(None);
         }
+
+        let stem_empty = match extension {
+            Some(ext) => transformed.strip_prefix('.') == Some(ext),
+            None => transformed.is_empty(),
+        };
+        if stem_empty {
+            anyhow::bail!("renaming '{}' would leave an empty name", file_name);
+        }
+        check_single_name(&new_name)?;
 
         let parent = path
             .parent()
@@ -452,6 +462,20 @@ impl FileRenamer {
             }
         }
     }
+}
+
+/// Fails unless `name` is one path component. Prefixes and suffixes can come
+/// from a repository's `reformat.json`, and `.git/hooks/` as a prefix would
+/// install a tracked script as a git hook.
+fn check_single_name(name: &str) -> crate::Result<()> {
+    if name.contains(std::path::is_separator)
+        || name == "."
+        || name == ".."
+        || name.eq_ignore_ascii_case(".git")
+    {
+        anyhow::bail!("'{}' is not a valid file name for a rename", name);
+    }
+    Ok(())
 }
 
 /// True if `name` starts with a valid date in `format`, alone or followed by
@@ -1790,5 +1814,72 @@ mod tests {
 
         assert_eq!(stats.renamed, 1);
         assert_eq!(stats.skipped, 1);
+    }
+
+    #[test]
+    fn test_computed_name_must_be_one_component() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a.txt");
+        fs::write(&path, "x").unwrap();
+
+        for prefix in [".git/hooks/", "../", "sub/"] {
+            let renamer = FileRenamer::new(RenameOptions {
+                add_prefix: Some(prefix.to_string()),
+                ..Default::default()
+            });
+            assert!(renamer.rename_file(&path, false).is_err(), "{prefix}");
+            assert!(path.exists(), "{prefix}");
+        }
+    }
+
+    #[test]
+    fn test_name_cannot_become_dot_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("x");
+        fs::write(&path, "y").unwrap();
+        let renamer = FileRenamer::new(RenameOptions {
+            replace_prefix: Some(("x".to_string(), ".git".to_string())),
+            ..Default::default()
+        });
+        assert!(renamer.rename_file(&path, false).is_err());
+    }
+
+    #[test]
+    fn test_removing_the_whole_stem_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("foo.txt");
+        fs::write(&path, "x").unwrap();
+        let renamer = FileRenamer::new(RenameOptions {
+            remove_prefix: Some("foo".to_string()),
+            ..Default::default()
+        });
+        assert!(renamer.rename_file(&path, false).is_err());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_add_suffix_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a_old.txt");
+        fs::write(&path, "x").unwrap();
+        let renamer = FileRenamer::new(RenameOptions {
+            add_suffix: Some("_old".to_string()),
+            ..Default::default()
+        });
+        assert!(!renamer.rename_file(&path, false).unwrap());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_file_named_like_a_skip_dir_is_renamed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("build");
+        fs::write(&path, "x").unwrap();
+        let renamer = FileRenamer::new(RenameOptions {
+            add_prefix: Some("my_".to_string()),
+            ..Default::default()
+        });
+        assert!(renamer.rename_file(&path, false).unwrap());
+        assert!(tmp.path().join("my_build").exists());
     }
 }

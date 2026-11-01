@@ -78,6 +78,8 @@ pub struct RunReport {
     pub steps: Vec<StepTotals>,
     /// Files changed by at least one step.
     pub files_changed: usize,
+    /// Files at least one step accepted.
+    pub files_examined: usize,
     /// One message per file that could not be read or written.
     pub errors: Vec<String>,
 }
@@ -115,11 +117,11 @@ pub(crate) fn accepts_by_extension<S: AsRef<str>>(
     within_depth(file, recursive) && matches_extension(&file.path, extensions)
 }
 
-/// True if the per-transformer file methods skip `path`: a hidden name or a
-/// build directory name, as their directory walks do.
+/// True if the per-transformer file methods skip `path`: a hidden name, as
+/// their directory walks do.
 fn skipped_by_name(path: &Path) -> bool {
     path.file_name()
-        .is_none_or(|n| crate::walk::is_excluded_name(n, crate::walk::DEFAULT_SKIP_DIRS))
+        .is_none_or(|n| crate::walk::is_excluded_name(n, &[] as &[&str]))
 }
 
 /// Receives a changed file with its original and new contents.
@@ -162,6 +164,7 @@ where
         if active.is_empty() {
             continue;
         }
+        report.files_examined += 1;
         match apply_steps(steps, &active, &file, dry_run) {
             Ok(Some((original, updated, units))) => {
                 report.files_changed += 1;
@@ -204,19 +207,24 @@ pub fn apply_to_bytes(
         .filter(|&i| steps[i].accepts(file))
         .collect();
     match transform_active(steps, &active, file, input, dry_run) {
-        Some((output, units)) => (output, units),
+        Some((output, units, messages)) => {
+            messages.iter().for_each(|m| log::info!("{}", m));
+            (output, units)
+        }
         None => (input.to_vec(), vec![0; steps.len()]),
     }
 }
 
 /// Applies the `active` steps to `input`. `None` if binary or unchanged.
+/// Also returns one log line per step that changed something. The caller logs
+/// them once the change has succeeded, so a failed write reports only the error.
 fn transform_active(
     steps: &[&dyn ContentStep],
     active: &[usize],
     file: &FileTarget,
     input: &[u8],
     dry_run: bool,
-) -> Option<(Vec<u8>, Vec<usize>)> {
+) -> Option<(Vec<u8>, Vec<usize>, Vec<String>)> {
     if input.contains(&0) {
         log::debug!("Skipping binary file: {}", file.path.display());
         return None;
@@ -224,6 +232,7 @@ fn transform_active(
 
     let mut current = input.to_vec();
     let mut units = vec![0; steps.len()];
+    let mut messages = Vec::new();
     for &i in active {
         let step = steps[i];
         let result = match std::str::from_utf8(&current) {
@@ -240,14 +249,18 @@ fn transform_active(
         };
         if let Some((next, n)) = result {
             if next != current {
-                log::info!("{} '{}'", step.describe(n, dry_run), file.path.display());
+                messages.push(format!(
+                    "{} '{}'",
+                    step.describe(n, dry_run),
+                    file.path.display()
+                ));
                 units[i] = n;
                 current = next;
             }
         }
     }
 
-    (current != input).then_some((current, units))
+    (current != input).then_some((current, units, messages))
 }
 
 /// Reads `file`, applies the `active` steps, and writes the result.
@@ -258,12 +271,15 @@ fn apply_steps(
     dry_run: bool,
 ) -> crate::Result<Applied> {
     let original = fs::read(&file.path)?;
-    let Some((updated, units)) = transform_active(steps, active, file, &original, dry_run) else {
+    let Some((updated, units, messages)) =
+        transform_active(steps, active, file, &original, dry_run)
+    else {
         return Ok(None);
     };
     if !dry_run {
         write_atomic(&file.path, &updated)?;
     }
+    messages.iter().for_each(|m| log::info!("{}", m));
     Ok(Some((original, updated, units)))
 }
 
@@ -326,6 +342,9 @@ pub(crate) fn process_path(
 pub fn write_atomic(path: &Path, contents: &[u8]) -> crate::Result<()> {
     let target = fs::canonicalize(path)?;
     let metadata = fs::metadata(&target)?;
+    // A rename needs only directory permission, so it would replace a file the
+    // user made read-only.
+    fs::OpenOptions::new().write(true).open(&target)?;
 
     #[cfg(unix)]
     {
@@ -364,6 +383,9 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> crate::Result<()> {
         drop(out);
         fs::set_permissions(&tmp, metadata.permissions())?;
         fs::rename(&tmp, &target)?;
+        // The rename is not durable until the directory reaches the disk.
+        #[cfg(unix)]
+        fs::File::open(dir)?.sync_all()?;
         Ok(())
     })();
 
@@ -634,5 +656,20 @@ mod tests {
         fs::write(&path, "x").unwrap();
         write_atomic(&path, b"y").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"y");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_atomic_refuses_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ro.txt");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        if fs::OpenOptions::new().write(true).open(&path).is_ok() {
+            return; // Running as root: permissions do not apply.
+        }
+        assert!(write_atomic(&path, b"new").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
     }
 }

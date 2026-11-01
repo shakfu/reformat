@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Security
+
+- `rename` rejects a computed name containing a path separator, or equal to `.`, `..` or `.git`. A `reformat.json` with `add_prefix: ".git/hooks/"` moved a tracked script into `.git/hooks`, where the next commit ran it. The `.git` check tested only the source path.
+
+### Fixed
+
+- The dirty-tree guard resolves symbolic links. It asked git about the link, while writes followed it, so `replace` could overwrite uncommitted work in another repository. A link that leaves the work tree for a directory outside git is now refused, unless `--allow-dirty`.
+- `group` keeps its change record when a directory cannot be read. The error discarded the record of every earlier move. If the record itself cannot be written, it goes to stderr.
+- `group` reports an existing target as an error and exits 2. It used to warn, leave the file behind and exit 0.
+- A pipeline checks config, globs, `group` arguments and an existing `changes.json` before its first step writes. A file named directly can no longer be followed by steps after `rename`, since its path no longer exists by then.
+- `--check` exits 2 when the walk cannot read an entry. It used to exit 0 without examining the files there.
+- The skip list applies to directories only, so a file named `build` is processed.
+- Reference scanning finds a name that extends another moved name, such as `a.txt.bak` alongside `a.txt`. Standard Aho-Corasick matching reported the shorter name, which the standalone check rejected, and the scan had by then passed the longer one.
+- `header` no longer treats a Rust `#![...]` line as a shebang. In Python it inserts after an encoding declaration, which PEP 263 requires on line 1 or 2.
+- `write_atomic` refuses a read-only file. The rename needs only directory permission, so read-only files were being replaced. It also syncs the parent directory on Unix.
+- `rename` treats an empty stem as an error: `--rm-prefix foo` turned `foo.txt` into the hidden `.txt`.
+- A failed run no longer claims success. A file whose write failed was logged as cleaned, because the line was logged before the write, and an unreadable directory printed "No files needed cleaning" before the error.
+- `README.md` pins `rev: 0.4.0`, matching the tag format the repository uses.
+
+### Changed
+
+- `emojis` defaults to prose extensions: `.md`, `.txt`, `.rst`, `.org`. In source code an emoji may sit in a string literal. This also narrows the default command and the `reformat-emojis` hook. Pass `-e` to opt in. Limiting the extensions was chosen over adding `emojis` to the dirty-tree guard, which would refuse the staged files a pre-commit hook receives.
+- `endings` no longer defaults to `.bat`, and `indent` no longer defaults to `.go`. `cmd.exe` can misread labels in LF batch files, and `gofmt` requires tabs.
+- `clean` strips only spaces and tabs. It deleted form feeds and non-breaking spaces at line ends.
+- `header` rejects `{year}` without `update_year`, which wrote the placeholder into files.
+- `--add-suffix` skips a name that already ends in the suffix, as `--add-prefix` does.
+- Summaries report how many files were examined. A named file that no step accepts produces a warning, and so does a hidden one.
+- `validate_steps` allows one `group` step. A second one always failed on the first one's record.
+
 ## [0.4.0] - 2026-10-04
 
 This release breaks the library API. See Changed.

@@ -46,9 +46,9 @@ impl Default for IndentOptions {
             style: IndentStyle::Spaces,
             width: 4,
             file_extensions: vec![
-                ".py", ".pyx", ".pxd", ".pxi", ".c", ".h", ".cpp", ".hpp", ".rs", ".go", ".java",
-                ".js", ".ts", ".jsx", ".tsx", ".md", ".qmd", ".txt", ".toml", ".yaml", ".yml",
-                ".json", ".xml", ".html", ".css",
+                ".py", ".pyx", ".pxd", ".pxi", ".c", ".h", ".cpp", ".hpp", ".rs", ".java", ".js",
+                ".ts", ".jsx", ".tsx", ".md", ".qmd", ".txt", ".toml", ".yaml", ".yml", ".json",
+                ".xml", ".html", ".css",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -494,5 +494,12 @@ mod tests {
             spaces.transform("a:\n\tb: 1\n", &yaml).unwrap().0,
             "a:\n    b: 1\n"
         );
+    }
+
+    /// `gofmt` requires tabs, and the default style is spaces.
+    #[test]
+    fn test_go_is_not_a_default() {
+        let step = IndentNormalizer::with_defaults();
+        assert!(!step.accepts(&FileTarget::file(Path::new("a.go"))));
     }
 }
