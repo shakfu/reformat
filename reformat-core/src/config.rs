@@ -16,6 +16,7 @@ use crate::header::HeaderOptions;
 use crate::indent::{IndentOptions, IndentStyle};
 use crate::rename::{CaseTransform, RenameOptions, SpaceReplace, TimestampFormat};
 use crate::replace::{ReplaceOptions, ReplacePattern};
+use crate::todo::TodoOptions;
 use crate::whitespace::WhitespaceOptions;
 
 /// Root configuration: a map of preset names to preset definitions.
@@ -48,6 +49,8 @@ pub struct Preset {
     pub header: Option<HeaderConfig>,
     #[serde(default)]
     pub editorconfig: Option<EditorConfigConfig>,
+    #[serde(default)]
+    pub todo: Option<TodoConfig>,
 }
 
 /// Valid step names for presets.
@@ -62,6 +65,7 @@ pub const VALID_STEPS: &[&str] = &[
     "replace",
     "header",
     "editorconfig",
+    "todo",
 ];
 
 /// Validate that all steps in a preset are recognized.
@@ -150,6 +154,35 @@ pub struct EmojiConfig {
     pub remove_other_emojis: Option<bool>,
     pub file_extensions: Option<Vec<String>>,
     pub recursive: Option<bool>,
+}
+
+/// Configuration for the todo step.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TodoConfig {
+    pub default_priority: Option<String>,
+    pub file_names: Option<Vec<String>>,
+    pub recursive: Option<bool>,
+}
+
+impl TodoConfig {
+    /// Builds the TODO formatter options this config describes.
+    pub fn to_options(&self, dry_run: bool) -> TodoOptions {
+        let mut options = TodoOptions {
+            dry_run,
+            ..Default::default()
+        };
+        if let Some(ref v) = self.default_priority {
+            options.default_priority = v.clone();
+        }
+        if let Some(ref v) = self.file_names {
+            options.file_names = v.clone();
+        }
+        if let Some(v) = self.recursive {
+            options.recursive = v;
+        }
+        options
+    }
 }
 
 /// Configuration for the clean step.

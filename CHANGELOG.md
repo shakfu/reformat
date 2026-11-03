@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `todo` restructures `TODO.md` files into [pma](https://github.com/shakfu/pma)'s format: `# TODO`, then `## Critical`, `## High`, `## Medium` and `## Low`. Items in other sections move to `--default-priority` (Medium) under a `###` group named after their section. It needs a clean tree, as `replace` does, because it moves content between sections.
+- `init` creates an empty pma-style `TODO.md` in each directory named. It never overwrites one. A separate command over a `--create` flag on `todo`, so content steps still only rewrite files they are given.
+
 ### Security
 
 - `rename` rejects a computed name containing a path separator, or equal to `.`, `..` or `.git`. A `reformat.json` with `add_prefix: ".git/hooks/"` moved a tracked script into `.git/hooks`, where the next commit ran it. The `.git` check tested only the source path.

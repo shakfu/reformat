@@ -818,3 +818,60 @@ fn test_check_diff_into_closed_pipe_exits_1() {
     drop(child.stdout.take());
     assert_eq!(child.wait().unwrap().code(), Some(1));
 }
+
+#[test]
+fn test_todo_restructures_only_todo_files() {
+    let tmp = fixture(&[
+        ("TODO.md", "# Tasks\n\n## Parser\n\n- fix a\n"),
+        ("sub/todo.md", "## High\n\n- [ ] b\n"),
+        ("README.md", "## Parser\n\n- fix a\n"),
+    ]);
+    let dir = tmp.path();
+
+    let check = run(dir, &["todo", "--check", "."]);
+    assert_eq!(check.status.code(), Some(1), "{:?}", check);
+    assert_eq!(read(dir, "TODO.md"), "# Tasks\n\n## Parser\n\n- fix a\n");
+
+    let out = run(
+        dir,
+        &["todo", "--allow-dirty", "--default-priority", "low", "."],
+    );
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        read(dir, "TODO.md"),
+        "# TODO\n\n## Critical\n\n## High\n\n## Medium\n\n## Low\n\n### Parser\n\n- [ ] fix a\n"
+    );
+    assert!(read(dir, "sub/todo.md").starts_with("# TODO\n\n## Critical\n\n## High\n\n- [ ] b\n"));
+    assert_eq!(read(dir, "README.md"), "## Parser\n\n- fix a\n");
+    assert_eq!(run(dir, &["todo", "--check", "."]).status.code(), Some(0));
+}
+
+#[test]
+fn test_todo_rejects_extensions() {
+    let tmp = fixture(&[("TODO.md", "")]);
+    let out = run(tmp.path(), &["todo", "-e", "md", "."]);
+    assert_eq!(out.status.code(), Some(2), "{:?}", out);
+}
+
+#[test]
+fn test_init_creates_todo_and_never_overwrites() {
+    let tmp = fixture(&[("a/todo.md", "keep\n"), ("b/x.txt", "")]);
+    let dir = tmp.path();
+
+    let dry = run(dir, &["init", "--dry-run", "b"]);
+    assert!(dry.status.success(), "{:?}", dry);
+    assert!(!dir.join("b/TODO.md").exists());
+
+    let out = run(dir, &["init", "a", "b"]);
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(read(dir, "a/todo.md"), "keep\n");
+    assert_eq!(read(dir, "b/TODO.md"), reformat_core::todo::SKELETON);
+    // The skeleton is already in the format `todo` writes.
+    assert_eq!(run(dir, &["todo", "--check", "b"]).status.code(), Some(0));
+
+    // A bad path fails the run before any file is written.
+    fs::create_dir(dir.join("c")).unwrap();
+    let bad = run(dir, &["init", "c", "missing"]);
+    assert_eq!(bad.status.code(), Some(2), "{:?}", bad);
+    assert!(!dir.join("c/TODO.md").exists());
+}

@@ -32,6 +32,7 @@ pub mod rename;
 pub mod replace;
 pub mod step;
 pub mod style;
+pub mod todo;
 pub mod walk;
 pub mod whitespace;
 
@@ -55,6 +56,7 @@ pub use rename::{
 pub use replace::{ContentReplacer, ReplaceOptions, ReplacePattern};
 pub use step::{apply_to_bytes, ContentStep, FileTarget, RunReport, StepTotals};
 pub use style::{FileStyle, StyleStep};
+pub use todo::{TodoFormatter, TodoOptions};
 pub use whitespace::{WhitespaceCleaner, WhitespaceOptions};
 
 // Re-export Result type

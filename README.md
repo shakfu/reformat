@@ -22,6 +22,7 @@ Every transformation is an independent module with its own options struct, sensi
 | `ContentReplacer` | `replace` | Regex find-and-replace with capture group support, multiple sequential patterns |
 | `HeaderManager` | `header` | Insert or update file headers (license, copyright) with year templating |
 | `StyleStep` | `editorconfig` | Apply `.editorconfig` settings: trailing whitespace, final newline, line endings, and optionally indentation |
+| `TodoFormatter` | `todo` | Restructure `TODO.md` into [pma](https://github.com/shakfu/pma)'s Critical, High, Medium and Low sections |
 
 All transformers share common behaviours: recursive directory traversal, file extension filtering, dry-run mode, and the file selection rules below.
 
@@ -107,7 +108,7 @@ The project is organised as a Cargo workspace:
 
 Transformations are applied **in place and are not reversible**. `reformat` has no undo, and only `group` records what it did.
 
-- Run against a clean working tree, or a backup. `rename_files`, `group`, `convert` and `replace` enforce this: they refuse to modify paths with uncommitted changes, untracked files or gitignored files in git, unless given `--allow-dirty`. Gitignored files count when named directly or walked with `--no-ignore`. So do presets and jobs containing those steps. Previews are never refused. If git fails for any reason other than "not a git repository", the run is refused.
+- Run against a clean working tree, or a backup. `rename_files`, `group`, `convert`, `replace` and `todo` enforce this: they refuse to modify paths with uncommitted changes, untracked files or gitignored files in git, unless given `--allow-dirty`. Gitignored files count when named directly or walked with `--no-ignore`. So do presets and jobs containing those steps. Previews are never refused. If git fails for any reason other than "not a git repository", the run is refused.
 
 - Try `--diff` first. It shows exactly what would change and writes nothing.
 
@@ -223,6 +224,47 @@ println!("Emojis transformed: {} files ({} changes)",
 println!("Whitespace cleaned: {} files ({} lines)",
          stats.files_whitespace_cleaned, stats.whitespace_lines_cleaned);
 ```
+
+### TODO Files
+
+`reformat todo` rewrites each `TODO.md` into pma's format v2:
+
+```markdown
+# TODO
+
+## Critical
+
+### Category1
+
+- [ ] task1
+
+- [ ] task2
+
+## High
+
+## Medium
+
+## Low
+```
+
+```bash
+reformat todo --diff .
+reformat todo --default-priority low TODO.md
+```
+
+- The title becomes `# TODO`. The four priority sections are always present, in that order. `## high` and `## High Priority` count as `## High`.
+
+- Items in any other section move to `--default-priority` (Medium), under a `###` group named after the section. A `###` inside it that names a priority sets the priority instead.
+
+- Bullets and checkbox spellings become `- [ ] text` or `- [x] text`. Plain bullets in `## Done` or `## Completed` become `- [x]`.
+
+- Plain bullets outside the priority sections count as items only while the file has no priority section. Once it has one, pma treats them as notes, and so does `todo`.
+
+- Text that is not an item is kept: before the sections if it came first, in its own section after them otherwise. Indented lines stay under their item. Fenced code is never read as structure.
+
+Files are selected by name, `TODO.md` in any case, so `-e` is not accepted; use `--include`. Check the result with `pma lint`.
+
+`reformat init [DIR]...` writes the empty skeleton to `TODO.md` in each directory, `.` by default. A directory that already has a `TODO.md`, in any case, is skipped. Use `todo` to reformat an existing one.
 
 ### Line Ending Normalization
 
@@ -815,6 +857,7 @@ reformat presets --config ci/reformat.json
 | `replace` | `patterns` (array of `{find, replace, literal, ignore_case}`; the last two default to false), `file_extensions`, `recursive` |
 | `header` | `text`, `update_year`, `file_extensions`, `recursive` |
 | `editorconfig` | `indent`, `recursive` |
+| `todo` | `default_priority` (critical/high/medium/low), `file_names`, `recursive` |
 
 Steps without explicit configuration use sensible defaults.
 

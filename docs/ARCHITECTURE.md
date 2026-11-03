@@ -23,6 +23,7 @@ reformat-core/src/
   indent.rs      indent     tabs <-> spaces, leading whitespace only
   replace.rs     replace    sequential regex replacements
   header.rs      header     insert or update a header, year-aware
+  todo.rs        todo       TODO.md into pma's priority sections
   converter.rs   convert    identifier case conversion (ConvertOptions)
   case.rs        CaseFormat: patterns, word splitting and joining
   rename.rs      rename     file name transforms
@@ -102,7 +103,7 @@ These hold for every command. The tests that cover them are named in parentheses
 
 - **Binary files are skipped.** A NUL byte marks a file as binary. Files that are not UTF-8 are skipped by every step except `endings`.
 
-- **Destructive runs need a clean tree.** `rename`, `group`, `convert` and `replace` refuse paths git reports as modified, untracked, or ignored where the run reaches them, unless `--allow-dirty`. Symbolic links are resolved first, and a link from a work tree to a location outside git is refused. A git failure other than "not a git repository" refuses the run. Fixes chosen at `group`'s interactive prompt are checked again before they are applied.
+- **Destructive runs need a clean tree.** `rename`, `group`, `convert`, `replace` and `todo` refuse paths git reports as modified, untracked, or ignored where the run reaches them, unless `--allow-dirty`. Symbolic links are resolved first, and a link from a work tree to a location outside git is refused. A git failure other than "not a git repository" refuses the run. Fixes chosen at `group`'s interactive prompt are checked again before they are applied.
 
 ## Reference fixing
 

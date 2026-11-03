@@ -8,14 +8,15 @@ use log::{debug, info, warn};
 use logging_timer::time;
 use reformat_core::config::{
     CleanConfig, ConvertConfig, EditorConfigConfig, EmojiConfig, EndingsConfig, GroupConfig,
-    HeaderConfig, IndentConfig, RenameConfig, ReplaceConfig, ReplacePatternEntry,
+    HeaderConfig, IndentConfig, RenameConfig, ReplaceConfig, ReplacePatternEntry, TodoConfig,
 };
 use reformat_core::{
     ContentStep, EmojiTransformer, EndingsNormalizer, FileGrouper, FileRenamer, FileTarget,
     FixRecord, HeaderManager, IndentNormalizer, Preset, ReferenceFixer, ReferenceScanner,
-    ScanOptions, StyleStep, WhitespaceCleaner,
+    ScanOptions, StyleStep, TodoFormatter, WhitespaceCleaner,
 };
 use simplelog::*;
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -41,6 +42,8 @@ use std::process::ExitCode;
                   - replace: Regex find-and-replace across files\n\
                   - header: Insert or update file headers\n\
                   - editorconfig: Apply .editorconfig settings\n\
+                  - todo: Restructure TODO.md into priority sections\n\
+                  - init: Create an empty TODO.md\n\
                   - apply_fixes: Apply reference fixes recorded by group\n\
                   - presets: List the presets in reformat.json\n\
                   - completions, man: Print shell completions or the man page\n\n\
@@ -563,6 +566,20 @@ enum Commands {
         indent: bool,
     },
 
+    /// Restructure TODO.md files into Critical, High, Medium and Low sections
+    Todo {
+        #[command(flatten)]
+        common: Common,
+
+        #[command(flatten)]
+        recursion: Recursion,
+
+        /// Section for items from sections without a priority
+        #[arg(long = "default-priority", value_name = "PRIORITY", default_value = "medium",
+              value_parser = ["critical", "high", "medium", "low"])]
+        default_priority: String,
+    },
+
     /// List the presets in reformat.json and their steps
     Presets,
 
@@ -578,6 +595,17 @@ enum Commands {
         /// Directory to write reformat.1 and a page per subcommand into
         #[arg(long = "out-dir", value_name = "DIR")]
         out_dir: Option<PathBuf>,
+    },
+
+    /// Create an empty TODO.md in each directory that has none
+    Init {
+        /// Directories to create TODO.md in
+        #[arg(value_name = "DIR", default_value = ".")]
+        dirs: Vec<PathBuf>,
+
+        /// Report what would be created, create nothing
+        #[arg(short = 'd', long = "dry-run")]
+        dry_run: bool,
     },
 
     /// Apply the reference fixes recorded by `group` in a fixes file
@@ -714,7 +742,7 @@ struct Invocation<'a> {
 }
 
 /// Steps whose changes need review, so they refuse uncommitted work.
-const NEEDS_CLEAN_TREE: &[&str] = &["rename", "group", "convert", "replace"];
+const NEEDS_CLEAN_TREE: &[&str] = &["rename", "group", "convert", "replace", "todo"];
 
 /// Steps that change paths rather than contents run on their own.
 fn is_content_step(step: &str) -> bool {
@@ -734,6 +762,7 @@ fn step_recursive(preset: &Preset, step: &str) -> bool {
         "replace" => preset.replace.as_ref().and_then(|c| c.recursive),
         "header" => preset.header.as_ref().and_then(|c| c.recursive),
         "editorconfig" => preset.editorconfig.as_ref().and_then(|c| c.recursive),
+        "todo" => preset.todo.as_ref().and_then(|c| c.recursive),
         _ => None,
     }
     .unwrap_or(true)
@@ -780,6 +809,7 @@ fn widen_extensions_for_include(preset: &mut Preset) {
     if let Some(c) = p.header.as_mut() {
         widen(&mut c.file_extensions);
     }
+    widen(&mut p.todo.get_or_insert_with(Default::default).file_names);
 }
 
 /// Builds the content step `step` from its config.
@@ -840,6 +870,10 @@ fn build_content_step(
                 move |path: &Path| editorconfig::style_of(path, indent),
                 cfg.recursive.unwrap_or(true),
             ))
+        }
+        "todo" => {
+            let cfg = preset.todo.clone().unwrap_or_default();
+            Box::new(TodoFormatter::new(cfg.to_options(dry_run))?)
         }
         _ => unreachable!("step validation should have caught this"),
     })
@@ -1708,6 +1742,45 @@ fn run_group(
 }
 
 #[time("debug")]
+/// Writes `todo::SKELETON` to `TODO.md` in each of `dirs`. A directory that
+/// already has one, in any case, is skipped: an existing file is never
+/// overwritten.
+fn run_init(dirs: &[PathBuf], dry_run: bool) -> anyhow::Result<bool> {
+    // Every path is checked before anything is written.
+    for dir in dirs {
+        if !dir.is_dir() {
+            anyhow::bail!("init: '{}' is not a directory", dir.display());
+        }
+        if reformat_core::walk::in_git_dir(dir) {
+            anyhow::bail!("init: refusing to write inside .git: '{}'", dir.display());
+        }
+    }
+    let prefix = if dry_run { "[DRY-RUN] " } else { "" };
+    for dir in dirs {
+        let existing = fs::read_dir(dir)?.filter_map(Result::ok).find(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case("TODO.md"))
+        });
+        if let Some(e) = existing {
+            info!("{}Skipped '{}': it exists", prefix, e.path().display());
+            continue;
+        }
+        let path = dir.join("TODO.md");
+        if !dry_run {
+            // create_new fails rather than overwrite a file made since the check.
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(reformat_core::todo::SKELETON.as_bytes()))
+                .map_err(|e| anyhow::anyhow!("init: '{}': {}", path.display(), e))?;
+        }
+        info!("{}Created '{}'", prefix, path.display());
+    }
+    Ok(false)
+}
+
 fn run_apply_fixes(fixes_file: &Path, dry_run: bool, allow_dirty: bool) -> anyhow::Result<bool> {
     let record = FixRecord::read_from_file(fixes_file)
         .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", fixes_file.display(), e))?;
@@ -1754,7 +1827,8 @@ impl Commands {
             | Commands::Indent { common, .. }
             | Commands::Replace { common, .. }
             | Commands::Header { common, .. }
-            | Commands::Editorconfig { common, .. } => Some(common),
+            | Commands::Editorconfig { common, .. }
+            | Commands::Todo { common, .. } => Some(common),
             _ => None,
         }
     }
@@ -2221,6 +2295,36 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
                 "All files already match .editorconfig",
             )
         }
+
+        Commands::Todo {
+            common,
+            recursion,
+            default_priority,
+        } => {
+            if common.extensions.is_some() {
+                anyhow::bail!(
+                    "todo selects files named TODO.md; use --include or --exclude instead of -e"
+                );
+            }
+            let cfg = TodoConfig {
+                default_priority: Some(default_priority),
+                file_names: None,
+                recursive: Some(recursion.enabled()),
+            };
+            run_single_step(
+                "todo",
+                Preset {
+                    todo: Some(cfg),
+                    ..preset_of("todo")
+                },
+                &common,
+                allow_dirty,
+                |o| format!("Restructured {} file(s)", o.files()),
+                "All TODO files already match",
+            )
+        }
+
+        Commands::Init { dirs, dry_run } => run_init(&dirs, dry_run),
 
         Commands::ApplyFixes {
             fixes_file,
