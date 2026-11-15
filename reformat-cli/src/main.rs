@@ -597,11 +597,15 @@ enum Commands {
         out_dir: Option<PathBuf>,
     },
 
-    /// Create an empty TODO.md in each directory that has none
+    /// Create starter files in each directory that has none
     Init {
-        /// Directories to create TODO.md in
+        /// Directories to create files in
         #[arg(value_name = "DIR", default_value = ".")]
         dirs: Vec<PathBuf>,
+
+        /// Create an empty pma-style TODO.md (the only target so far, so required)
+        #[arg(long, required = true)]
+        todo: bool,
 
         /// Report what would be created, create nothing
         #[arg(short = 'd', long = "dry-run")]
@@ -1749,10 +1753,10 @@ fn run_init(dirs: &[PathBuf], dry_run: bool) -> anyhow::Result<bool> {
     // Every path is checked before anything is written.
     for dir in dirs {
         if !dir.is_dir() {
-            anyhow::bail!("init: '{}' is not a directory", dir.display());
+            anyhow::bail!("init --todo: '{}' is not a directory", dir.display());
         }
         if reformat_core::walk::in_git_dir(dir) {
-            anyhow::bail!("init: refusing to write inside .git: '{}'", dir.display());
+            anyhow::bail!("init --todo: refusing to write inside .git: '{}'", dir.display());
         }
     }
     let prefix = if dry_run { "[DRY-RUN] " } else { "" };
@@ -1774,7 +1778,7 @@ fn run_init(dirs: &[PathBuf], dry_run: bool) -> anyhow::Result<bool> {
                 .create_new(true)
                 .open(&path)
                 .and_then(|mut f| f.write_all(reformat_core::todo::SKELETON.as_bytes()))
-                .map_err(|e| anyhow::anyhow!("init: '{}': {}", path.display(), e))?;
+                .map_err(|e| anyhow::anyhow!("init --todo: '{}': {}", path.display(), e))?;
         }
         info!("{}Created '{}'", prefix, path.display());
     }
@@ -2324,7 +2328,7 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
             )
         }
 
-        Commands::Init { dirs, dry_run } => run_init(&dirs, dry_run),
+        Commands::Init { dirs, dry_run, .. } => run_init(&dirs, dry_run),
 
         Commands::ApplyFixes {
             fixes_file,

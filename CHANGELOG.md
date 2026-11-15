@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 
 - `todo` restructures `TODO.md` files into [pma](https://github.com/shakfu/pma)'s format: `# TODO`, then `## Critical`, `## High`, `## Medium` and `## Low`. Items in other sections move to `--default-priority` (Medium) under a `###` group named after their section. It needs a clean tree, as `replace` does, because it moves content between sections.
-- `init` creates an empty pma-style `TODO.md` in each directory named. It never overwrites one. A separate command over a `--create` flag on `todo`, so content steps still only rewrite files they are given.
+- `init --todo` creates an empty pma-style `TODO.md` in each directory named. It never overwrites one. A separate command over a `--create` flag on `todo`, so content steps still only rewrite files they are given. `init` is the scaffolding verb and takes a target flag. A bare `init` is an error, which leaves its default free for a later target.
 
 ### Security
 
@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - `--add-suffix` skips a name that already ends in the suffix, as `--add-prefix` does.
 - Summaries report how many files were examined. A named file that no step accepts produces a warning, and so does a hidden one.
 - `validate_steps` allows one `group` step. A second one always failed on the first one's record.
+- Both crates publish `keywords` and `categories` from the workspace manifest. `homepage` is dropped because it duplicated `repository`.
 
 ## [0.4.0] - 2026-10-04
 

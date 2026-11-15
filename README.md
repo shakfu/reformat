@@ -264,7 +264,7 @@ reformat todo --default-priority low TODO.md
 
 Files are selected by name, `TODO.md` in any case, so `-e` is not accepted; use `--include`. Check the result with `pma lint`.
 
-`reformat init [DIR]...` writes the empty skeleton to `TODO.md` in each directory, `.` by default. A directory that already has a `TODO.md`, in any case, is skipped. Use `todo` to reformat an existing one.
+`reformat init --todo [DIR]...` writes the empty skeleton to `TODO.md` in each directory, `.` by default. A directory that already has a `TODO.md`, in any case, is skipped. Use `todo` to reformat an existing one.
 
 ### Line Ending Normalization
 

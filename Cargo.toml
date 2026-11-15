@@ -13,7 +13,6 @@ edition = "2021"
 rust-version = "1.82"
 authors = ["Shakeeb Alireza"]
 license = "MIT"
-homepage = "https://github.com/shakfu/reformat"
 repository = "https://github.com/shakfu/reformat"
 keywords = ["code", "transform", "rename", "format", "cleanup"]
 categories = ["command-line-utilities", "development-tools", "text-processing"]

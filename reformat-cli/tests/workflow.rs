@@ -858,11 +858,11 @@ fn test_init_creates_todo_and_never_overwrites() {
     let tmp = fixture(&[("a/todo.md", "keep\n"), ("b/x.txt", "")]);
     let dir = tmp.path();
 
-    let dry = run(dir, &["init", "--dry-run", "b"]);
+    let dry = run(dir, &["init", "--todo", "--dry-run", "b"]);
     assert!(dry.status.success(), "{:?}", dry);
     assert!(!dir.join("b/TODO.md").exists());
 
-    let out = run(dir, &["init", "a", "b"]);
+    let out = run(dir, &["init", "--todo", "a", "b"]);
     assert!(out.status.success(), "{:?}", out);
     assert_eq!(read(dir, "a/todo.md"), "keep\n");
     assert_eq!(read(dir, "b/TODO.md"), reformat_core::todo::SKELETON);
@@ -871,7 +871,12 @@ fn test_init_creates_todo_and_never_overwrites() {
 
     // A bad path fails the run before any file is written.
     fs::create_dir(dir.join("c")).unwrap();
-    let bad = run(dir, &["init", "c", "missing"]);
+    let bad = run(dir, &["init", "--todo", "c", "missing"]);
     assert_eq!(bad.status.code(), Some(2), "{:?}", bad);
+    assert!(!dir.join("c/TODO.md").exists());
+
+    // `init` needs a target; it does not default to one.
+    let bare = run(dir, &["init", "c"]);
+    assert_eq!(bare.status.code(), Some(2), "{:?}", bare);
     assert!(!dir.join("c/TODO.md").exists());
 }
