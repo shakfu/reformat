@@ -1756,7 +1756,10 @@ fn run_init(dirs: &[PathBuf], dry_run: bool) -> anyhow::Result<bool> {
             anyhow::bail!("init --todo: '{}' is not a directory", dir.display());
         }
         if reformat_core::walk::in_git_dir(dir) {
-            anyhow::bail!("init --todo: refusing to write inside .git: '{}'", dir.display());
+            anyhow::bail!(
+                "init --todo: refusing to write inside .git: '{}'",
+                dir.display()
+            );
         }
     }
     let prefix = if dry_run { "[DRY-RUN] " } else { "" };
